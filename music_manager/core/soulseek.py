@@ -31,6 +31,20 @@ QUALITY = {
 }
 
 
+def _make_runnable(path: str) -> None:
+    """Pe Mac: bit de execuție + scoaterea „carantinei” puse de browser la descărcare."""
+    if sys.platform == "win32":
+        return
+    try:
+        if not os.access(path, os.X_OK):
+            os.chmod(path, os.stat(path).st_mode | 0o111)
+        if sys.platform == "darwin":
+            subprocess.run(["xattr", "-d", "com.apple.quarantine", path],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
 def sockseek_path(custom: str = "") -> str | None:
     """Caută executabilul: setarea utilizatorului, lângă aplicație, apoi în PATH."""
     if custom and os.path.isfile(custom):
@@ -44,6 +58,7 @@ def sockseek_path(custom: str = "") -> str | None:
         for sub in ("sockseek", "", "tools"):
             p = os.path.join(b, sub, exe)
             if b and os.path.isfile(p):
+                _make_runnable(p)
                 return p
     return shutil.which(exe) or shutil.which("sldl")
 

@@ -107,8 +107,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest dist/MusicManager-Setup.exe dist/MusicManager-portabil.zip \
-            --title "Music Manager ${{ steps.ver.outputs.version }} (build ${{ github.run_number }})" \
-            --notes "Descarcă **MusicManager-Setup.exe** și rulează-l. Varianta portabilă: dezarhivează zip-ul și pornește MusicManager.exe." \
-            --latest
+          TITLE="Music Manager ${{ steps.ver.outputs.version }} (build ${{ github.run_number }})"
+          NOTES="Windows: descarcă **MusicManager-Setup.exe** și rulează-l (portabil: MusicManager-portabil.zip). Mac (Intel, merge și pe Apple Silicon): **MusicManager-Mac.dmg**, când e publicat."
+          if gh release view latest > /dev/null 2>&1; then
+            gh release upload latest dist/MusicManager-Setup.exe dist/MusicManager-portabil.zip --clobber
+            gh release edit latest --title "$TITLE" --notes "$NOTES" --latest
+          else
+            gh release create latest dist/MusicManager-Setup.exe dist/MusicManager-portabil.zip \
+              --title "$TITLE" --notes "$NOTES" --latest
+          fi

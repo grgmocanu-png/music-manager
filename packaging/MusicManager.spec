@@ -1,6 +1,7 @@
 # PyInstaller: construiește aplicația ca folder (pornește repede), apoi
 # Inno Setup face din el un installer obișnuit de Windows.
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
@@ -25,11 +26,29 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
+icon = os.path.join(root, "packaging", "icon.icns" if sys.platform == "darwin" else "icon.ico")
 exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
     name="MusicManager",
     console=False,
-    icon=os.path.join(root, "packaging", "icon.ico") if os.path.exists(os.path.join(root, "packaging", "icon.ico")) else None,
+    icon=icon if os.path.exists(icon) else None,
 )
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="MusicManager")
+
+if sys.platform == "darwin":
+    import re
+    ver = re.search(r'__version__ = "([^"]+)"', open(os.path.join(root, "music_manager", "__init__.py")).read()).group(1)
+    app = BUNDLE(
+        coll,
+        name="Music Manager.app",
+        icon=icon if os.path.exists(icon) else None,
+        bundle_identifier="ro.grgmocanu.musicmanager",
+        version=ver,
+        info_plist={
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "11.0",
+            "CFBundleShortVersionString": ver,
+            "NSAppleEventsUsageDescription": "Music Manager deschide Finder ca să-ți arate fișierele.",
+        },
+    )

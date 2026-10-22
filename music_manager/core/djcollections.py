@@ -70,7 +70,12 @@ def _traktor_location(loc: ET.Element) -> str:
         return ""
     if len(vol) == 2 and vol[1] == ":":           # Windows: „C:”
         return vol + d + f
-    return d + f if d.startswith("/") else "/" + d + f     # macOS: VOLUME e numele discului
+    p = d + f if d.startswith("/") else "/" + d + f       # macOS: VOLUME e numele discului
+    if vol and not os.path.exists(p):
+        ext = "/Volumes/" + vol + p                         # disc extern pe Mac
+        if os.path.exists(ext):
+            return ext
+    return p
 
 
 def parse_traktor(path: str) -> Collection:

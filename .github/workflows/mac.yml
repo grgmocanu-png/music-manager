@@ -1,0 +1,89 @@
+name: Build Mac
+
+# Se pornește doar la cerere (butonul „Run workflow” din GitHub → Actions → Build Mac),
+# ca să nu consume minute la fiecare modificare.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    name: Build Mac (Intel)
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+
+      - name: Teste
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+
+      - name: Descarcă Sockseek (macOS Intel)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo fiso64/sockseek --pattern "*osx-x64.tar.gz" -D ss_dl
+          mkdir -p ss_tmp sockseek
+          tar -xzf ss_dl/*.tar.gz -C ss_tmp
+          EXE=$(find ss_tmp -type f -name sockseek | head -1)
+          test -n "$EXE"
+          cp -R "$(dirname "$EXE")"/. sockseek/
+          chmod +x sockseek/sockseek
+          ./sockseek/sockseek --help | head -3 || true
+
+      - name: Iconiță (.icns)
+        run: |
+          mkdir -p icon.iconset
+          for s in 16 32 64 128 256 512; do
+            sips -z $s $s packaging/icon.png --out icon.iconset/icon_${s}x${s}.png > /dev/null
+          done
+          cp icon.iconset/icon_32x32.png icon.iconset/icon_16x16@2x.png
+          cp icon.iconset/icon_64x64.png icon.iconset/icon_32x32@2x.png
+          cp icon.iconset/icon_256x256.png icon.iconset/icon_128x128@2x.png
+          cp icon.iconset/icon_512x512.png icon.iconset/icon_256x256@2x.png
+          rm icon.iconset/icon_64x64.png
+          iconutil -c icns icon.iconset -o packaging/icon.icns
+
+      - name: Versiune
+        id: ver
+        run: echo "version=$(python -c 'import music_manager as m; print(m.__version__)')" >> $GITHUB_OUTPUT
+
+      - name: PyInstaller
+        run: pyinstaller --noconfirm --clean packaging/MusicManager.spec
+
+      - name: Verifică aplicația
+        env:
+          QT_QPA_PLATFORM: offscreen
+          MM_SMOKE_TEST: "1"
+        run: |
+          "dist/Music Manager.app/Contents/MacOS/MusicManager"
+          find "dist/Music Manager.app" -name sockseek -type f | grep -q sockseek
+
+      - name: DMG
+        run: |
+          mkdir -p dmg
+          cp -R "dist/Music Manager.app" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "Music Manager" -srcfolder dmg -ov -format UDZO dist/MusicManager-Mac.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MusicManager-Mac
+          path: dist/MusicManager-Mac.dmg
+
+      - name: Publică pe pagina Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view latest > /dev/null 2>&1; then
+            gh release upload latest dist/MusicManager-Mac.dmg --clobber
+          else
+            gh release create latest dist/MusicManager-Mac.dmg --title "Music Manager ${{ steps.ver.outputs.version }}" --notes "Mac" --latest
+          fi

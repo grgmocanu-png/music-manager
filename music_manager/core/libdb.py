@@ -454,9 +454,15 @@ TRAKTOR_KEY_INDEX = {k: i for i, k in enumerate(
      "Cm", "C#m", "Dm", "D#m", "Em", "Fm", "F#m", "Gm", "G#m", "Am", "A#m", "Bm"])}
 
 
-def _traktor_loc(path: str) -> tuple[str, str, str]:
+def _traktor_loc(path: str, mac_volume: str = "Macintosh HD") -> tuple[str, str, str]:
     p = os.path.abspath(path).replace("\\", "/")
     vol = ""
+    if not (len(p) > 1 and p[1] == ":"):
+        vol = mac_volume        # pe Mac, Traktor ține numele discului (ex. „Macintosh HD”)
+        if p.startswith("/Volumes/"):            # disc extern: /Volumes/NUME/...
+            parts = p.split("/", 3)
+            vol = parts[2]
+            p = "/" + (parts[3] if len(parts) > 3 else "")
     if len(p) > 1 and p[1] == ":":
         vol, p = p[:2], p[2:]
     d, f = p.rsplit("/", 1)
