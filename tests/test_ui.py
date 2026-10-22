@@ -36,34 +36,72 @@ def _tracks(tmp_path):
     return out
 
 
+def _wait(app, task, timeout=20):
+    import time
+    end = time.time() + timeout
+    while task is not None and task.isRunning() and time.time() < end:
+        app.processEvents()
+        time.sleep(0.02)
+    app.processEvents()
+
+
 def test_main_window_smoke(app, tmp_path):
     from music_manager.ui.cleanup_tab import CleanupTab  # noqa: F401
     from music_manager.ui.download_tab import DOWNLOADABLE, HAVE, MISSING, Row
     from music_manager.ui.library_tab import DuplicatesDialog, RenameDialog
     from music_manager.ui.main_window import MainWindow
-    from music_manager.ui.playlist_tab import harmonic_order
     from music_manager.core.library import find_duplicates
+    from music_manager.core import libdb as ldb
 
     win = MainWindow()
     win.show()
-    app.processEvents()
+    for _ in range(30):
+        app.processEvents()
+    lv = win.library
+    _wait(app, lv.task)
+    lv.timer.stop()
     tracks = _tracks(tmp_path)
 
-    # bibliotecă + playlisturi
-    win.state.set_tracks(tracks)
-    win.library.table.set_tracks(tracks)
-    win.library.search.setText("bicep")
-    assert win.library.table.proxy.rowCount() == 2
-    win.playlists.f_bpm_min.setValue(125)
-    win.playlists.f_bpm_max.setValue(135)
-    assert win.playlists.results.proxy.rowCount() == 2
-    win.playlists.add_tracks(tracks)
-    assert win.playlists.list.count() == 4
-    win.playlists.sort_bpm()
-    win.playlists.move_selected(1)
-    assert len(harmonic_order(tracks)) == 4
-    win.state.send_to_playlist.emit(tracks[:1])
-    assert win.sections.currentWidget() is win.lib
+    # bibliotecă: filtre, playlisturi, mixabile
+    lv._tracks = tracks
+    lv.collections = []
+    lv._rebuild_items()
+    lv.rebuild_tree()
+    lv.show_view(("all",))
+    assert lv.table.proxy.rowCount() == 4
+    lv.search.setText("bicep")
+    assert lv.table.proxy.rowCount() == 2
+    lv.clear_filters()
+    lv.bpm_lo.setValue(125)
+    lv.bpm_hi.setValue(135)
+    assert lv.table.proxy.rowCount() == 2
+    lv.clear_filters()
+    p = lv.db.new_playlist("Set")
+    lv.add_to_playlist(p.id, [t.path for t in tracks[:3]])
+    lv.show_view(("pl", p.id))
+    assert lv.table.proxy.rowCount() == 3
+    lv.move_in_playlist([lv.by_path[ldb.norm_path(tracks[2].path)]], -1)
+    assert lv.db.get_playlist(p.id).tracks[1] == tracks[2].path
+    sp = lv.db.new_playlist("House", "smart")
+    sp.rules = {"match": "all", "rules": [{"field": "genre", "op": "este oricare din", "value": "House"}]}
+    lv.show_view(("smart", sp.id))
+    assert lv.table.proxy.rowCount() == 1
+    lv.show_mixable(lv.items[0])
+    assert lv.view == ("mix",)
+    lv.set_rating(lv.items[:1], 4)
+    assert lv.db.extra(lv.items[0].path).rating == 4
+    # playlist cu piesă dispărută
+    p.tracks.append(str(tmp_path / "dispărută.mp3"))
+    lv.rebuild_tree()
+    assert any(m.missing for m in lv._missing_items())
+
+    # player: waveform desenat din analiză simulată
+    from music_manager.core.analysis import Analysis
+    a = Analysis(bpm=128, key="Am", duration=200, peak=[100] * 50, low=[200] * 50, mid=[80] * 50,
+                 high=[40] * 50, drops=[60.0])
+    lv.player.wave.set_data(a, 200)
+    lv.player.wave.set_position(0.3)
+    assert not lv.player.wave.grab().isNull()
 
     # conversie
     win.state.send_to_convert.emit([t.path for t in tracks])
@@ -71,6 +109,19 @@ def test_main_window_smoke(app, tmp_path):
     assert win.sections.currentWidget() is win.files and win.files.currentWidget() is win.convert
     win.convert.preset.setCurrentIndex(2)   # WAV -> avertisment pentru MP3-uri
     assert "comprimate" in win.convert.warning.text()
+
+    # dialoguri noi (construite, fără să le deschidem modal)
+    from music_manager.ui.dialogs import (ArtistCleanupDialog, BulkEditDialog, GenreCleanupDialog,
+                                          NameCleanupDialog, SmartPlaylistDialog, StyleMapDialog,
+                                          TagFinderDialog)
+    TagFinderDialog(tracks, None, win)
+    NameCleanupDialog(tracks, win)
+    BulkEditDialog(lv.items, win)
+    GenreCleanupDialog(lv.items, win).auto
+    ArtistCleanupDialog(lv.items, win)
+    sd = SmartPlaylistDialog("", None, lambda r: len(ldb.smart_filter(lv.items, r)), win)
+    sd._preview()
+    StyleMapDialog(win)
 
     # curățenie
     win.cleanup._scanned(tracks)

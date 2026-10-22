@@ -67,14 +67,16 @@ class SavedPlaylist:
 
 def track_to_dict(t) -> dict:
     return {"id": t.id, "title": t.title, "artists": list(t.artists), "album": t.album,
-            "duration": t.duration, "year": t.year, "isrc": t.isrc, "added_at": t.added_at}
+            "duration": t.duration, "year": t.year, "isrc": t.isrc, "added_at": t.added_at,
+            "cover_url": getattr(t, "cover_url", "")}
 
 
 def track_from_dict(d: dict):
     from .spotify import SpotifyTrack
     return SpotifyTrack(id=d.get("id", ""), title=d.get("title", ""), artists=list(d.get("artists") or []),
                         album=d.get("album", ""), duration=float(d.get("duration") or 0),
-                        year=d.get("year", ""), isrc=d.get("isrc", ""), added_at=d.get("added_at", ""))
+                        year=d.get("year", ""), isrc=d.get("isrc", ""), added_at=d.get("added_at", ""),
+                        cover_url=d.get("cover_url", ""))
 
 
 # stări calculate la verificarea unui playlist

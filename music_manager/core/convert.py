@@ -70,7 +70,8 @@ class ConvertResult:
 
 
 def plan_jobs(files: list[str], preset_key: str, out_dir: str | None,
-              base_dir: str | None = None) -> list[ConvertJob]:
+              base_dir: str | None = None, name_template: str | None = None,
+              clean_names: bool = False) -> list[ConvertJob]:
     """Calculează unde va ajunge fiecare fișier convertit.
 
     out_dir None  -> lângă fișierul original
@@ -80,6 +81,18 @@ def plan_jobs(files: list[str], preset_key: str, out_dir: str | None,
     jobs = []
     for src in files:
         stem = os.path.splitext(os.path.basename(src))[0]
+        if name_template or clean_names:
+            from .library import render_template, safe_name, track_from_file
+            from .namecleanup import clean_text
+            new = None
+            if name_template:
+                try:
+                    new = render_template(name_template, track_from_file(src))
+                except Exception:
+                    new = None
+            if not new:
+                new = safe_name(clean_text(stem)) if clean_names else stem
+            stem = (new or stem).replace("/", " - ")
         if out_dir:
             sub = ""
             if base_dir:

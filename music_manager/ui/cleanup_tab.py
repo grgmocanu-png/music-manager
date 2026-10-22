@@ -46,17 +46,18 @@ class CleanupTab(QWidget):
         self.table = TrackTable(self)
         self.search.textChanged.connect(self.table.proxy.set_text)
 
-        b_dup = QPushButton("1. Găsește dubluri…")
-        b_ren = QPushButton("2. Nume curate (Artist - Titlu)…")
-        b_tags = QPushButton("3. Taguri: BPM, tonalitate, gen, an…")
-        b_tags.setEnabled(False)
-        b_tags.setToolTip("Urmează în versiunea următoare")
+        b_dup = QPushButton("1. Dubluri…")
+        b_clean = QPushButton("2. Curăță numele (site-uri, [Free DL]…)…")
+        b_tags = QPushButton("3. Taguri online: gen, stil, an, label, copertă…")
+        b_ren = QPushButton("4. Redenumește / organizează după taguri…")
+        b_clean.clicked.connect(self.clean_names)
+        b_tags.clicked.connect(self.tags_online)
         self.b_undo = QPushButton("Anulează ultima operație")
         b_dup.clicked.connect(self.duplicates)
         b_ren.clicked.connect(self.rename)
         self.b_undo.clicked.connect(self.undo)
         actions = QHBoxLayout()
-        for b in (b_dup, b_ren, b_tags):
+        for b in (b_dup, b_clean, b_tags, b_ren):
             actions.addWidget(b)
         actions.addStretch()
         actions.addWidget(self.b_undo)
@@ -145,6 +146,27 @@ class CleanupTab(QWidget):
             QMessageBox.information(self, "Nume curate", "Scanează mai întâi.")
             return
         dlg = RenameDialog(tracks, self)
+        if dlg.exec() == QDialog.Accepted and dlg.applied:
+            self._after_change()
+
+    def clean_names(self):
+        tracks = self._targets()
+        if not tracks:
+            QMessageBox.information(self, "Nume", "Scanează mai întâi.")
+            return
+        from .dialogs import NameCleanupDialog
+        dlg = NameCleanupDialog(tracks, self)
+        if dlg.exec() == QDialog.Accepted and dlg.applied:
+            self._after_change()
+
+    def tags_online(self):
+        tracks = self._targets()
+        if not tracks:
+            QMessageBox.information(self, "Taguri", "Scanează mai întâi.")
+            return
+        from .dialogs import TagFinderDialog
+        from .settings_tab import spotify_client
+        dlg = TagFinderDialog(tracks, spotify_client(), self)
         if dlg.exec() == QDialog.Accepted and dlg.applied:
             self._after_change()
 

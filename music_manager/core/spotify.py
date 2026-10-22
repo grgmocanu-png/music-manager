@@ -65,6 +65,8 @@ class SpotifyTrack:
     year: str = ""
     isrc: str = ""
     added_at: str = ""
+    cover_url: str = ""
+    artist_ids: list = field(default_factory=list)
 
     @property
     def artist(self) -> str:
@@ -107,10 +109,15 @@ def track_from_json(entry: dict) -> SpotifyTrack | None:
     artists = [a.get("name", "").strip() for a in (t.get("artists") or []) if a.get("name")]
     album = t.get("album") or {}
     rd = album.get("release_date") or ""
+    images = album.get("images") or []
+    # cea mai mare copertă, dar nu peste ~640 px
+    images = sorted((i for i in images if i.get("url")), key=lambda i: -(i.get("width") or 0))
     return SpotifyTrack(
         id=tid, title=name, artists=artists, album=(album.get("name") or "").strip(),
         duration=(t.get("duration_ms") or 0) / 1000, year=rd[:4] if rd[:4].isdigit() else "",
         isrc=((t.get("external_ids") or {}).get("isrc") or ""), added_at=entry.get("added_at") or "",
+        cover_url=images[0]["url"] if images else "",
+        artist_ids=[a.get("id") for a in (t.get("artists") or []) if a.get("id")],
     )
 
 
@@ -244,6 +251,18 @@ class SpotifyClient:
             raise SpotifyError(f"Eroare Spotify {e.code}: {detail[:200]}")
         except (urllib.error.URLError, socket.timeout) as e:
             raise SpotifyError(f"Nu mă pot conecta la Spotify: {getattr(e, 'reason', e)}")
+
+    def search_track(self, artist: str, title: str) -> list[SpotifyTrack]:
+        q = f'track:"{title}" artist:"{artist}"'
+        data = self.get("/search", {"q": q, "type": "track", "limit": 5})
+        items = ((data.get("tracks") or {}).get("items")) or []
+        return [t for t in (track_from_json({"track": it}) for it in items) if t]
+
+    def artist_genres(self, artist_id: str) -> list[str]:
+        try:
+            return list(self.get(f"/artists/{artist_id}").get("genres") or [])
+        except SpotifyError:
+            return []
 
     def get_playlist(self, playlist_id: str, progress=None) -> SpotifyPlaylist:
         meta = self.get(f"/playlists/{playlist_id}", {"fields": "id,name,owner(display_name)"})

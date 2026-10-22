@@ -16,19 +16,20 @@ AUDIO_EXTENSIONS = {
 LOSSLESS_EXTENSIONS = {".flac", ".wav", ".wave", ".aif", ".aiff", ".alac"}
 
 FIELDS = ("artist", "title", "album", "albumartist", "genre", "year",
-          "track", "bpm", "key", "comment")
+          "track", "bpm", "key", "comment", "label")
 
 # --- corespondența câmpurilor pe formate ---------------------------------
 _ID3_FRAMES = {
     "artist": "TPE1", "title": "TIT2", "album": "TALB", "albumartist": "TPE2",
     "genre": "TCON", "year": "TDRC", "track": "TRCK", "bpm": "TBPM",
-    "key": "TKEY",
+    "key": "TKEY", "label": "TPUB",
 }
 _VORBIS_KEYS = {
     "artist": ["artist"], "title": ["title"], "album": ["album"],
     "albumartist": ["albumartist", "album artist"], "genre": ["genre"],
     "year": ["date", "year"], "track": ["tracknumber"], "bpm": ["bpm", "tempo"],
     "key": ["initialkey", "key"], "comment": ["comment", "description"],
+    "label": ["label", "organization", "publisher"],
 }
 _MP4_KEYS = {
     "artist": "\xa9ART", "title": "\xa9nam", "album": "\xa9alb",
@@ -36,6 +37,7 @@ _MP4_KEYS = {
     "comment": "\xa9cmt",
 }
 _MP4_KEY_FREEFORM = "----:com.apple.iTunes:initialkey"
+_MP4_LABEL_FREEFORM = "----:com.apple.iTunes:LABEL"
 
 
 @dataclass
@@ -53,6 +55,7 @@ class TagData:
     fields: dict = field(default_factory=dict)
     info: AudioInfo = field(default_factory=AudioInfo)
     cover: tuple | None = None   # (bytes, mime)
+    has_cover: bool = False
 
 
 def is_audio_file(path: str) -> bool:
@@ -115,10 +118,10 @@ def read_tags(path: str, want_cover: bool = False) -> TagData:
         comms = tags.getall("COMM")
         if comms:
             raw["comment"] = _first(comms[0].text)
-        if want_cover:
-            pics = tags.getall("APIC")
-            if pics:
-                data.cover = (pics[0].data, pics[0].mime or "image/jpeg")
+        pics = tags.getall("APIC")
+        data.has_cover = bool(pics)
+        if want_cover and pics:
+            data.cover = (pics[0].data, pics[0].mime or "image/jpeg")
     elif isinstance(audio, MP4):
         t = tags or {}
         for name, key in _MP4_KEYS.items():
@@ -131,6 +134,10 @@ def read_tags(path: str, want_cover: bool = False) -> TagData:
         if _MP4_KEY_FREEFORM in t and t[_MP4_KEY_FREEFORM]:
             v = t[_MP4_KEY_FREEFORM][0]
             raw["key"] = v.decode("utf-8", "ignore") if isinstance(v, bytes) else str(v)
+        if _MP4_LABEL_FREEFORM in t and t[_MP4_LABEL_FREEFORM]:
+            v = t[_MP4_LABEL_FREEFORM][0]
+            raw["label"] = v.decode("utf-8", "ignore") if isinstance(v, bytes) else str(v)
+        data.has_cover = bool(t.get("covr"))
         if want_cover and "covr" in t and t["covr"]:
             c = t["covr"][0]
             mime = "image/png" if getattr(c, "imageformat", 13) == 14 else "image/jpeg"
@@ -148,10 +155,10 @@ def read_tags(path: str, want_cover: bool = False) -> TagData:
                 if k in lower and _first(lower[k]):
                     raw[name] = _first(lower[k])
                     break
-        if want_cover:
-            pics = getattr(audio, "pictures", None)
-            if pics:
-                data.cover = (pics[0].data, pics[0].mime or "image/jpeg")
+        pics = getattr(audio, "pictures", None)
+        data.has_cover = bool(pics) or "metadata_block_picture" in lower
+        if want_cover and pics:
+            data.cover = (pics[0].data, pics[0].mime or "image/jpeg")
 
     data.fields = _clean(raw)
 
@@ -236,6 +243,8 @@ def write_tags(path: str, fields: dict, cover: tuple | None = None) -> None:
             t["tmpo"] = [int(fields["bpm"])]
         if "key" in fields:
             t[_MP4_KEY_FREEFORM] = [MP4FreeForm(fields["key"].encode("utf-8"))]
+        if "label" in fields:
+            t[_MP4_LABEL_FREEFORM] = [MP4FreeForm(fields["label"].encode("utf-8"))]
         if cover:
             fmt = MP4Cover.FORMAT_PNG if cover[1] == "image/png" else MP4Cover.FORMAT_JPEG
             t["covr"] = [MP4Cover(cover[0], imageformat=fmt)]

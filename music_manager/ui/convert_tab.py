@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 
 from ..core import convert as conv
 from ..core import tags as tagmod
-from ..core.library import find_audio_files
+from ..core.library import RENAME_PRESETS, find_audio_files
 from .common import AppState, Task, settings
 
 SOURCE_FILTERS = {
@@ -100,6 +100,20 @@ class ConvertTab(QWidget):
         ff = QFormLayout(fmt_box)
         ff.addRow("Format:", self.preset)
         ff.addRow("Frecvență:", self.rate)
+        self.naming = QComboBox()
+        self.naming.addItem("Păstrează numele original", None)
+        for label, tpl in RENAME_PRESETS.items():
+            if "/" not in tpl:
+                self.naming.addItem(label, tpl)
+        saved = settings().value("convert/naming", "") or ""
+        i = self.naming.findData(saved) if saved else -1
+        self.naming.setCurrentIndex(i if i >= 0 else 1)
+        self.naming.currentIndexChanged.connect(
+            lambda: settings().setValue("convert/naming", self.naming.currentData() or ""))
+        self.clean_names = QCheckBox("Curăță gunoaiele din nume (site-uri, [Free DL], 320kbps…)")
+        self.clean_names.setChecked(True)
+        ff.addRow("Nume fișier:", self.naming)
+        ff.addRow("", self.clean_names)
         self.warning = QLabel()
         self.warning.setWordWrap(True)
         self.warning.setStyleSheet("color: #e67e22;")
@@ -261,7 +275,8 @@ class ConvertTab(QWidget):
         key = self.preset.currentData()
         rate = conv.SAMPLE_RATES[self.rate.currentText()]
         if_exists = IF_EXISTS_LABELS[self.if_exists.currentText()]
-        jobs = conv.plan_jobs(list(self.files), key, out_dir, base)
+        jobs = conv.plan_jobs(list(self.files), key, out_dir, base,
+                              name_template=self.naming.currentData(), clean_names=self.clean_names.isChecked())
 
         def work(progress, cancelled):
             def on_result(r, done, total):

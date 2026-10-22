@@ -173,7 +173,9 @@ class DownloadRunner(QObject):
                     done[0] += 1
                 progress(done[0], len(items), json.dumps(asdict(ev)))
             return slsk.run_download(items, out, user, pw, quality, exe, work, on_event, cancelled,
-                                     wide=wide, length_tol=length_tol, link=link)
+                                     wide=wide, length_tol=length_tol, link=link,
+                                     retries=int(settings().value("slsk/retries", 20) or 20),
+                                     concurrent=int(settings().value("slsk/concurrent", 5) or 5))
 
         self.task = Task(work_fn, self)
         self.task.progress.connect(self._progress)

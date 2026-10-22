@@ -13,7 +13,7 @@ from typing import Callable, Iterable
 
 from . import tags as tagmod
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 
 @dataclass
@@ -29,6 +29,8 @@ class Track:
     bpm: str = ""
     key: str = ""
     comment: str = ""
+    label: str = ""
+    has_cover: bool = False
     duration: float = 0.0
     bitrate: int = 0
     sample_rate: int = 0
@@ -73,6 +75,7 @@ def track_from_file(path: str) -> Track:
         data = tagmod.read_tags(path)
         for k, v in data.fields.items():
             setattr(t, k, v)
+        t.has_cover = data.has_cover
         i = data.info
         t.duration, t.bitrate = i.duration, i.bitrate
         t.sample_rate, t.bits_per_sample, t.lossless = i.sample_rate, i.bits_per_sample, i.lossless

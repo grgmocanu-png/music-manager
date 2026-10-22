@@ -110,7 +110,8 @@ def write_csv(path: str, items: list[DownloadItem]) -> None:
 
 
 def build_command(exe: str, csv_path: str, out_dir: str, config_path: str,
-                  quality: str = "mp3_320", length_tol: int = 5, wide: bool = False) -> list[str]:
+                  quality: str = "mp3_320", length_tol: int = 5, wide: bool = False,
+                  retries: int = 20, concurrent: int = 5) -> list[str]:
     """wide=True: căutare mai largă pentru piesele negăsite (mai lentă, mai tolerantă)."""
     if wide:
         length_tol = max(length_tol, 15)
@@ -121,6 +122,7 @@ def build_command(exe: str, csv_path: str, out_dir: str, config_path: str,
            "--no-skip-existing", "--no-write-index",
            # fără --fast-search: așteaptă câteva rezultate și alege după calitate, viteză și slot liber
            "--search-timeout", "8000",
+           "--max-retries", str(retries), "--concurrent-jobs", str(concurrent),
            "--progress-json", "--no-progress"]
     if quality == "mp3_320_strict":
         cmd += ["--format", "mp3", "--min-bitrate", "315", "--pref-format", "mp3"]
@@ -215,10 +217,14 @@ def finalize_file(path: str, track: SpotifyTrack, out_dir: str) -> str:
         dest = unique_path(dest)
         shutil.move(path, dest)
     try:
-        current = tagmod.read_tags(dest).fields
+        data = tagmod.read_tags(dest)
         new = {"artist": artist, "title": title, "album": track.album, "year": track.year}
+        cover = None
+        if getattr(track, "cover_url", "") and not data.has_cover:
+            from .tagsearch import TagFinder
+            cover = TagFinder().download_cover(track.cover_url)
         # păstrăm ce exista deja (gen, BPM, tonalitate) și suprascriem doar identitatea piesei
-        tagmod.write_tags(dest, {**current, **{k: v for k, v in new.items() if v}})
+        tagmod.write_tags(dest, {**data.fields, **{k: v for k, v in new.items() if v}}, cover)
     except Exception:
         pass
     return dest
@@ -355,7 +361,7 @@ def run_download(items: list[DownloadItem], out_dir: str, username: str, passwor
                  quality: str = "mp3_320", exe: str | None = None, work_dir: str | None = None,
                  on_event: Callable[[DownloadEvent], None] | None = None,
                  cancelled: Callable[[], object] | None = None, wide: bool = False,
-                 length_tol: int = 5, link: str = "") -> DownloadSummary:
+                 length_tol: int = 5, link: str = "", retries: int = 20, concurrent: int = 5) -> DownloadSummary:
     """Rulează Sockseek și raportează evenimentele.
 
     cancelled() poate întoarce:
@@ -381,7 +387,8 @@ def run_download(items: list[DownloadItem], out_dir: str, username: str, passwor
         cmd = [exe, link, "-c", conf_path, "-o", out_dir, "--no-skip-existing", "--no-write-index",
                "--progress-json", "--no-progress"]
     else:
-        cmd = build_command(exe, csv_path, out_dir, conf_path, quality, length_tol=length_tol, wide=wide)
+        cmd = build_command(exe, csv_path, out_dir, conf_path, quality, length_tol=length_tol, wide=wide,
+                            retries=retries, concurrent=concurrent)
     kwargs = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW

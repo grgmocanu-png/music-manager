@@ -21,7 +21,7 @@ a = Analysis(
     hiddenimports=["mutagen", "imageio_ffmpeg", "certifi"] + collect_submodules("yt_dlp.extractor.youtube"),
     excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
               "PySide6.Qt3DCore", "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtCharts",
-              "PySide6.QtDataVisualization", "PySide6.QtMultimedia", "PySide6.QtPdf"],
+              "PySide6.QtDataVisualization", "PySide6.QtPdf"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
