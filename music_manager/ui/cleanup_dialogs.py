@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from ..core import library as lib
 from ..core.namecleanup import clean_tag_fields, plan_name_cleanup
-from .common import add_reveal_menu, after_moves, fmt_duration, history, settings, undo_dir
+from .common import add_reveal_menu, add_space_toggle, after_moves, fmt_duration, history, settings, undo_dir
 
 STATUS = {
     "ok": ("Se redenumește", "#27ae60"),
@@ -52,6 +52,7 @@ class PlanTable(QWidget):
         b_none.clicked.connect(lambda: self._set_all(False))
         self.table = QTableWidget(0, 5)
         add_reveal_menu(self.table, lambda idx: self.plan[idx.row()].src)
+        add_space_toggle(self.table, 0)
         self.table.setHorizontalHeaderLabels(["", "Acum", "Devine", "Stare", "Motiv / detalii"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -356,6 +357,7 @@ class DuplicatesDialog(QDialog):
         tools.addWidget(self.include_done)
 
         self.tree = QTreeWidget()
+        add_space_toggle(self.tree)
         add_reveal_menu(self.tree, lambda idx: getattr(self.tree.itemFromIndex(idx).data(0, Qt.UserRole), "path", ""))
         self.tree.setHeaderLabels(["Piesă", "Calitate", "Durată", "Cale"])
         for i, w in enumerate((340, 160, 60)):

@@ -25,7 +25,8 @@ from ..core import spotify as sp
 from ..core import youtube as yt
 from ..core.matching import Matcher, search_query, wide_query
 from ..core.sources import PlaylistStore, SavedPlaylist, track_from_dict, track_to_dict
-from .common import AppState, Task, data_dir, fmt_duration, open_file, reveal_in_folder, reveal_label, settings
+from .common import (AppState, Task, add_space_toggle, data_dir, fmt_duration, open_file, reveal_in_folder,
+                     reveal_label, settings)
 from .slsk_search import ManualSearchDialog
 from .settings_tab import (download_dir, playlist_subfolders, slsk_credentials, slsk_quality,
                            spotify_client)
@@ -383,6 +384,7 @@ class PlaylistsPanel(TrackTableBase):
 
         self.table = self._make_table(["", "Artist", "Titlu", "Durată", "Stare",
                                        "Caută artist", "Caută titlu", "Fișier / detalii"])
+        add_space_toggle(self.table, C_CHECK)
         for c, w in ((C_CHECK, 28), (C_ARTIST, 170), (C_TITLE, 230), (C_DUR, 55), (C_STATUS, 190),
                      (C_QA, 140), (C_QT, 180)):
             self.table.setColumnWidth(c, w)
@@ -992,6 +994,7 @@ class NotFoundPanel(TrackTableBase):
 
         self.table = self._make_table(["", "Playlist", "Artist", "Titlu", "Motiv", "Data",
                                        "Caută artist", "Caută titlu", "Rezultat"])
+        add_space_toggle(self.table, N_CHECK)
         for c, w in ((N_CHECK, 28), (N_PL, 120), (N_ARTIST, 160), (N_TITLE, 220), (N_REASON, 220),
                      (N_DATE, 80), (N_QA, 130), (N_QT, 170)):
             self.table.setColumnWidth(c, w)

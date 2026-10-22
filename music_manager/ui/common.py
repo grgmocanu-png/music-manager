@@ -100,6 +100,50 @@ def add_reveal_menu(view, path_fn) -> None:
     view.customContextMenuRequested.connect(menu)
 
 
+class _SpaceToggle(QObject):
+    """Space pe rândurile selectate: bifează-le pe toate (sau le debifează, dacă erau toate bifate)."""
+
+    def __init__(self, view, col: int):
+        super().__init__(view)
+        self.view, self.col = view, col
+
+    def _items(self):
+        from PySide6.QtWidgets import QTableWidget, QTreeWidget
+        v = self.view
+        out = []
+        if isinstance(v, QTableWidget):
+            rows = sorted({i.row() for i in v.selectedIndexes()})
+            out = [v.item(r, self.col) for r in rows if not v.isRowHidden(r)]
+        elif isinstance(v, QTreeWidget):
+            out = [it for it in v.selectedItems() if not it.isHidden()]
+        return [it for it in out if it is not None and it.flags() & Qt.ItemIsUserCheckable
+                and it.flags() & Qt.ItemIsEnabled]
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        if ev.type() == QEvent.KeyPress and ev.key() == Qt.Key_Space and not ev.modifiers():
+            items = self._items()
+            if items:
+                from PySide6.QtWidgets import QTreeWidgetItem
+                tree = isinstance(items[0], QTreeWidgetItem)
+                state = (lambda it: it.checkState(0)) if tree else (lambda it: it.checkState())
+                on = not all(state(it) == Qt.Checked for it in items)
+                for it in items:
+                    if tree:
+                        it.setCheckState(0, Qt.Checked if on else Qt.Unchecked)
+                    else:
+                        it.setCheckState(Qt.Checked if on else Qt.Unchecked)
+                return True
+        return False
+
+
+def add_space_toggle(view, col: int = 0) -> None:
+    """În tabelele cu bife: selectezi rânduri, apeși Space → se bifează / debifează toate."""
+    f = _SpaceToggle(view, col)
+    view.installEventFilter(f)
+    view._space_toggle = f
+
+
 class Task(QThread):
     """Rulează o funcție lungă în fundal, ca fereastra să nu înghețe.
 

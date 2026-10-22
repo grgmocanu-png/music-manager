@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 
 from ..core import categories as cat
 from ..core import libdb as ldb
-from .common import fmt_duration
+from .common import add_space_toggle, fmt_duration
 from .dialogs import _item, _table, write_tags_in_background
 
 
@@ -35,6 +35,7 @@ class CategoryCleanupDialog(QDialog):
         self.search.setPlaceholderText("Filtrează valorile…")
         self.search.textChanged.connect(self._filter)
         self.table = _table(["", f"{self.title}", "Piese"], (28, 560))
+        add_space_toggle(self.table, 0)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         # 1. șterge text

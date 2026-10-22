@@ -269,3 +269,25 @@ def test_jobs_start_now(app):
     gate.set()
     a.wait(3000)
     b.wait(3000)
+
+
+def test_space_toggle(app):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+    from music_manager.ui.common import add_space_toggle
+    t = QTableWidget(3, 2)
+    for r in range(3):
+        it = QTableWidgetItem()
+        it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        it.setCheckState(Qt.Unchecked)
+        t.setItem(r, 0, it)
+        t.setItem(r, 1, QTableWidgetItem(str(r)))
+    add_space_toggle(t, 0)
+    t.selectRow(0)
+    t.setSelectionMode(t.SelectionMode.MultiSelection)
+    t.selectRow(2)
+    app.sendEvent(t, QKeyEvent(QEvent.KeyPress, Qt.Key_Space, Qt.NoModifier, " "))
+    assert [t.item(r, 0).checkState() == Qt.Checked for r in range(3)] == [True, False, True]
+    app.sendEvent(t, QKeyEvent(QEvent.KeyPress, Qt.Key_Space, Qt.NoModifier, " "))
+    assert all(t.item(r, 0).checkState() == Qt.Unchecked for r in range(3))

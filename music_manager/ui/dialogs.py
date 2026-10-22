@@ -19,7 +19,7 @@ from ..core.libdb import (RULE_FIELDS, RULE_OPS, artist_groups, compose_comment,
                           parse_comment)
 from ..core.namecleanup import clean_tag_fields, plan_name_cleanup
 from ..core.playlist import CAMELOT
-from .common import Task, add_reveal_menu, settings, undo_dir
+from .common import Task, add_reveal_menu, add_space_toggle, settings, undo_dir
 
 
 # --- setări comune ------------------------------------------------------------
@@ -160,6 +160,11 @@ class TagFinderDialog(QDialog):
         self.c_over = QCheckBox("Suprascrie ce e deja completat")
         self.c_orig = QCheckBox("Anul primei lansări (nu al reeditărilor)")
         self.c_orig.setChecked(True)
+        self.c_auto = QCheckBox("Scrie automat în fișiere pe măsură ce găsesc")
+        self.c_auto.setChecked(settings().value("tags/auto_write", True) not in (False, "false"))
+        self.c_auto.toggled.connect(lambda v: settings().setValue("tags/auto_write", bool(v)))
+        self._pending: list = []
+        self._written = 0
         opts = QHBoxLayout()
         opts.addWidget(QLabel("Completez:"))
         for c in (self.c_genre, self.c_year, self.c_label, self.c_cover):
@@ -167,10 +172,12 @@ class TagFinderDialog(QDialog):
         opts.addSpacing(20)
         opts.addWidget(self.c_over)
         opts.addWidget(self.c_orig)
+        opts.addWidget(self.c_auto)
         opts.addStretch()
 
         self.table = _table(self.COLS, (28, 300, 150, 200, 60, 140, 70, 160))
         add_reveal_menu(self.table, lambda idx: self.tracks[idx.row()].path)
+        add_space_toggle(self.table, 0)
         b_all, b_none, b_new = QPushButton("Bifează tot"), QPushButton("Debifează tot"), \
             QPushButton("Bifează doar ce n-a fost verificat")
         b_all.clicked.connect(lambda: self._set_checks(lambda i: True))
@@ -320,37 +327,89 @@ class TagFinderDialog(QDialog):
             ch = True
         self.table.setItem(i, 7, _item(r.source or "negăsită", None if r.source else "#c0392b", tooltip=r.match))
         self.table.setItem(i, 8, _item("acum", "#27ae60"))
+        if ch and self.c_auto.isChecked():
+            job = self._job_for(i)
+            if job:
+                self._pending.append(job)
+                self._remember_written(i, job)
+                self.table.setItem(i, 8, _item("✓ scrise", "#27ae60"))
+            ch = False                       # deja scrise: nu mai e nimic de aplicat
+            if len(self._pending) >= 10:
+                self._flush()
         self.table.item(i, 0).setCheckState(Qt.Checked if ch else Qt.Unchecked)
-        self.status.setText(f"{d} / {total} verificate")
+        self.status.setText(f"{d} / {total} verificate" +
+                            (f" · tagurile scrise automat la {self._written + len(self._pending)} piese"
+                             if self.c_auto.isChecked() else ""))
 
     def _done(self, _):
         self.b_start.setText("Caută din nou")
         self.b_start.setEnabled(True)
+        self._flush(final=True)
         found = sum(1 for i in range(self.table.rowCount()) if self.table.item(i, 0).checkState() == Qt.Checked)
-        self.status.setText(f"Gata: {found} piese cu informații noi. Debifează ce nu vrei, apoi „Aplică”.")
+        if self.c_auto.isChecked():
+            self.status.setText(f"Gata: am scris automat tagurile la {self._written} piese.")
+        else:
+            self.status.setText(f"Gata: {found} piese cu informații noi. Debifează ce nu vrei, apoi „Aplică”.")
         self.b_apply.setEnabled(found > 0)
+
+    def _job_for(self, i):
+        """(cale, câmpuri, copertă) de scris pentru rândul i, sau None."""
+        if i not in self.results:
+            return None
+        t, r = self.tracks[i], self.results[i]
+        over = self.c_over.isChecked()
+        f = {}
+        if self.c_genre.isChecked():
+            if r.genre and (over or not t.genre):
+                f["genre"] = r.genre
+            old_style, role, energy = parse_comment(t.comment)
+            if r.style_text and (over or not old_style):
+                f["comment"] = compose_comment(r.style_text, role, energy)   # păstrăm rolul și energia
+        if self.c_year.isChecked() and r.year and (over or not t.year):
+            f["year"] = r.year
+        if self.c_label.isChecked() and r.label and (over or not t.label):
+            f["label"] = r.label
+        cover = r.cover_url if (self.c_cover.isChecked() and r.cover_url and (over or not t.has_cover)) else None
+        return (t.path, f, cover) if (f or cover) else None
+
+    def _remember_written(self, i, job):
+        t = self.tracks[i]
+        for k, v in job[1].items():
+            setattr(t, k, v)
+        if job[2]:
+            t.has_cover = True
+
+    def _flush(self, final=False):
+        """Scrie în fișiere ce s-a găsit (în loturi, ca activitate în fundal)."""
+        if self._pending:
+            batch, self._pending = self._pending, []
+            self._written += len(batch)
+            write_tags_in_background(self.parent() or self, batch,
+                                     getattr(self, "on_applied", None) if final else None,
+                                     "Scriu tagurile online")
+        elif final and self._written and getattr(self, "on_applied", None):
+            self.on_applied()
+
+    def done(self, r):
+        # la închidere: oprim căutarea și scriem ce s-a găsit deja
+        if self.task and self.task.isRunning():
+            for sig in (self.task.progress, self.task.succeeded, self.task.failed):
+                try:
+                    sig.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+            self.task.cancel()
+        self._flush(final=True)
+        super().done(r)
 
     def apply(self):
         jobs = []
-        over = self.c_over.isChecked()
-        for i, t in enumerate(self.tracks):
-            if self.table.item(i, 0).checkState() != Qt.Checked or i not in self.results:
+        for i in range(len(self.tracks)):
+            if self.table.item(i, 0).checkState() != Qt.Checked:
                 continue
-            r = self.results[i]
-            f = {}
-            if self.c_genre.isChecked():
-                if r.genre and (over or not t.genre):
-                    f["genre"] = r.genre
-                old_style, role, energy = parse_comment(t.comment)
-                if r.style_text and (over or not old_style):
-                    f["comment"] = compose_comment(r.style_text, role, energy)   # păstrăm rolul și energia
-            if self.c_year.isChecked() and r.year and (over or not t.year):
-                f["year"] = r.year
-            if self.c_label.isChecked() and r.label and (over or not t.label):
-                f["label"] = r.label
-            cover = r.cover_url if (self.c_cover.isChecked() and r.cover_url and (over or not t.has_cover)) else None
-            if f or cover:
-                jobs.append((t.path, f, cover))
+            job = self._job_for(i)
+            if job:
+                jobs.append(job)
         if not jobs:
             return
         write_tags_in_background(self.parent(), jobs, getattr(self, "on_applied", None),
@@ -480,6 +539,7 @@ class GenreCleanupDialog(QDialog):
                       "Stilul vechi se păstrează în Comentariu, dacă acesta e gol.")
         info.setWordWrap(True)
         self.table = _table(["", "Gen acum", "Piese", "Devine"], (28, 260, 60))
+        add_space_toggle(self.table, 0)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.target = QComboBox()
         self.target.setEditable(True)
@@ -571,6 +631,7 @@ class ArtistCleanupDialog(QDialog):
                       "„The”, „&” / „and”). Alege forma corectă pentru fiecare; se scrie în toate fișierele lui.")
         info.setWordWrap(True)
         self.table = _table(["", "Variante (piese)", "Forma corectă"], (28, 380))
+        add_space_toggle(self.table, 0)
         self.table.setRowCount(len(self.groups))
         self.combos = []
         for i, g in enumerate(self.groups):
