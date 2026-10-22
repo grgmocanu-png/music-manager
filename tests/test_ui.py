@@ -102,7 +102,7 @@ def test_main_window_smoke(app, tmp_path):
     daft = next(i for i in lv.items if i.track.artist == "Daft Punk")
     assert daft.family == "House"
     assert lv._suggest_playlists([daft], "bpm")[1] == "120–130"
-    assert lv._suggest_playlists([daft], "family")[1] == "House"
+    assert lv._suggest_playlists([daft], "family")[1] == ""      # există deja „House”
     assert lv._suggest_playlists([daft], "title") == ([], "")
     assert "Set" in daft.playlists
     lv.fam_menu.actions()[2].setChecked(True)
