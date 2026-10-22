@@ -22,6 +22,84 @@ from .playlist import compatible_keys, to_camelot
 
 DEFAULT_PRIORITY = ["Traktor", "Rekordbox", "VirtualDJ", "Fișier", "Analiză"]
 
+# rolul piesei într-un set
+ROLES = ["Opener", "Warm-up", "Build", "Peak", "Closer", "After"]
+_ROLE_BY_LOWER = {r.lower(): r for r in ROLES}
+_ROLE_BY_LOWER.update({"warmup": "Warm-up", "warm up": "Warm-up", "peak time": "Peak", "peaktime": "Peak",
+                       "afterhours": "After", "after hours": "After", "intro": "Opener", "outro": "Closer"})
+_ENERGY_RE = re.compile(r"^(?:e|energy|energie)\s*:?\s*(10|[1-9])$", re.I)
+
+
+def parse_comment(comment: str) -> tuple[str, str, int]:
+    """„Deep House | Peak | E7” -> („Deep House”, „Peak”, 7). Restul textului rămâne stil."""
+    style_parts, role, energy = [], "", 0
+    for part in [p.strip() for p in (comment or "").split("|")]:
+        if not part:
+            continue
+        low = part.lower()
+        if low in _ROLE_BY_LOWER and not role:
+            role = _ROLE_BY_LOWER[low]
+            continue
+        m = _ENERGY_RE.match(part)
+        if m and not energy:
+            energy = int(m.group(1))
+            continue
+        style_parts.append(part)
+    return " | ".join(style_parts), role, energy
+
+
+def compose_comment(style: str, role: str = "", energy: int = 0) -> str:
+    parts = [style.strip()] if style and style.strip() else []
+    if role:
+        parts.append(role)
+    if energy:
+        parts.append(f"E{energy}")
+    return " | ".join(parts)
+
+
+def suggest_role(energy: int, bpm: float, plays: int = 0, avg_pos: float = -1) -> str:
+    """Rol propus: din seturile tale (dacă ai cântat piesa de măcar 2 ori), altfel din energie."""
+    if plays >= 2 and avg_pos >= 0:
+        for limit, role in ((0.2, "Opener"), (0.4, "Warm-up"), (0.65, "Build"), (0.88, "Peak")):
+            if avg_pos < limit:
+                return role
+        return "Closer"
+    if not energy:
+        return ""
+    if bpm and bpm < 105 and energy <= 4:
+        return "After"
+    if energy <= 3:
+        return "Opener"
+    if energy <= 5:
+        return "Warm-up"
+    if energy == 6:
+        return "Build"
+    return "Peak"
+
+
+def parse_traktor_history(folder: str, min_tracks: int = 8) -> dict:
+    """Seturile tale din Traktor (History): pentru fiecare piesă, de câte ori și unde în set a fost cântată.
+
+    Întoarce {cale normalizată: [poziții relative 0..1]}.
+    """
+    from .djcollections import parse_traktor
+    out: dict[str, list] = {}
+    if not folder or not os.path.isdir(folder):
+        return out
+    for f in sorted(os.listdir(folder)):
+        if not f.lower().endswith(".nml"):
+            continue
+        col = parse_traktor(os.path.join(folder, f))
+        if col.error:
+            continue
+        for paths in col.playlists.values():
+            seq = list(dict.fromkeys(paths))
+            if len(seq) < min_tracks:
+                continue
+            for i, p in enumerate(seq):
+                out.setdefault(p, []).append(i / (len(seq) - 1))
+    return out
+
 
 @dataclass
 class Extra:
@@ -33,6 +111,8 @@ class Extra:
     an_drops: list = field(default_factory=list)
     user_bpm: float = 0.0         # setat manual (are prioritate maximă)
     user_key: str = ""
+    an_energy: int = 0
+    role: str = ""                # rolul pus de tine
 
 
 @dataclass
@@ -59,6 +139,12 @@ class LibItem:
     drops: list = field(default_factory=list)
     missing: bool = False
     offline: bool = False
+    energy: int = 0
+    energy_src: str = ""
+    role: str = ""
+    role_suggested: str = ""
+    plays: int = 0
+    avg_pos: float = -1
 
     @property
     def path(self) -> str:
@@ -70,7 +156,11 @@ class LibItem:
 
     @property
     def style(self) -> str:
-        return self.track.comment
+        return parse_comment(self.track.comment)[0]
+
+    @property
+    def role_or_suggestion(self) -> str:
+        return self.role or self.role_suggested
 
 
 class LibraryDB:
@@ -144,7 +234,7 @@ def _f(v) -> float:
 
 
 def build_items(tracks: list[Track], db: LibraryDB, collections: list[Collection],
-                priority: list[str] | None = None) -> list[LibItem]:
+                priority: list[str] | None = None, history: dict | None = None) -> list[LibItem]:
     priority = priority or DEFAULT_PRIORITY
     dj_priority = [p for p in priority if p not in ("Fișier", "Analiză")]
     traktor = next((c for c in collections if c.source == "Traktor" and not c.error), None)
@@ -176,6 +266,14 @@ def build_items(tracks: list[Track], db: LibraryDB, collections: list[Collection
         it = LibItem(track=t, bpm=round(bpm, 2), key=key, bpm_src=bsrc, key_src=ksrc,
                      rating=e.rating or dj.rating, color=e.color or dj.color, date_added=e.date_added,
                      in_traktor=bool(traktor and norm_path(t.path) in traktor.tracks), drops=e.an_drops)
+        _, c_role, c_energy = parse_comment(t.comment)
+        it.energy, it.energy_src = (c_energy, "Comentariu") if c_energy else (e.an_energy, "Analiză" if e.an_energy else "")
+        it.role = e.role or c_role
+        pos = (history or {}).get(norm_path(t.path)) or []
+        it.plays = len(pos)
+        it.avg_pos = sum(pos) / len(pos) if pos else -1
+        if not it.role:
+            it.role_suggested = suggest_role(it.energy, it.bpm, it.plays, it.avg_pos)
         items.append(it)
     return items
 
@@ -185,7 +283,7 @@ RULE_FIELDS = {
     "genre": "Gen", "style": "Stil / comentariu", "bpm": "BPM", "key": "Tonalitate", "year": "An",
     "rating": "Rating (stele)", "added": "Adăugată", "format": "Format", "artist": "Artist",
     "title": "Titlu", "label": "Label", "folder": "Folder", "in_traktor": "E în Traktor",
-    "has_cover": "Are copertă",
+    "has_cover": "Are copertă", "role": "Rol în set", "energy": "Energie (1–10)", "plays": "Cântată în seturile mele",
 }
 RULE_OPS = {
     "genre": ["este oricare din", "nu este"], "style": ["conține", "nu conține"],
@@ -193,6 +291,8 @@ RULE_OPS = {
     "added": ["în ultimele N zile"], "format": ["este oricare din"], "artist": ["conține", "nu conține"],
     "title": ["conține", "nu conține"], "label": ["conține"], "folder": ["conține"],
     "in_traktor": ["da", "nu"], "has_cover": ["da", "nu"],
+    "role": ["este oricare din", "este oricare din (inclusiv sugestii)"], "energy": ["între"],
+    "plays": ["de cel puțin N ori", "niciodată"],
 }
 
 
@@ -253,6 +353,17 @@ def rule_matches(it: LibItem, rule: dict) -> bool:
         return it.in_traktor == (op == "da")
     if f == "has_cover":
         return t.has_cover == (op == "da")
+    if f == "role":
+        wanted = {_ROLE_BY_LOWER.get(x.lower(), x) for x in _list(v)}
+        role = it.role_or_suggestion if "sugestii" in op else it.role
+        return role in wanted
+    if f == "energy":
+        lo, hi = (int(_f(x)) for x in (list(v) + [0, 0])[:2]) if isinstance(v, list) else (int(_f(v)), 0)
+        if not it.energy:
+            return False
+        return (not lo or it.energy >= lo) and (not hi or it.energy <= hi)
+    if f == "plays":
+        return it.plays == 0 if op == "niciodată" else it.plays >= int(_f(v) or 1)
     return True
 
 
@@ -402,11 +513,12 @@ def export_csv(path: str, items: list[LibItem]) -> None:
     import csv
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["Artist", "Titlu", "Gen", "Stil", "BPM", "Tonalitate", "Camelot", "An", "Label", "Rating", "Cale"])
+        w.writerow(["Artist", "Titlu", "Gen", "Stil", "Rol", "Energie", "BPM", "Tonalitate", "Camelot", "An",
+                    "Label", "Rating", "Cale"])
         for it in items:
             t = it.track
-            w.writerow([t.artist, t.display_title, t.genre, t.comment, it.bpm or "", it.key, it.camelot,
-                        t.year, t.label, it.rating or "", it.path])
+            w.writerow([t.artist, t.display_title, t.genre, it.style, it.role, it.energy or "", it.bpm or "",
+                        it.key, it.camelot, t.year, t.label, it.rating or "", it.path])
 
 
 # --- curățare genuri / artiști -----------------------------------------------

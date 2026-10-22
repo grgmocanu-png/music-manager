@@ -20,7 +20,7 @@ import numpy as np
 
 SR = 11025
 WAVE_BINS = 1200
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 4
 
 NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 # Profile de tonalitate folosite de KeyFinder (Ibrahim Sha'ath), potrivite pentru muzică electronică
@@ -41,6 +41,7 @@ class Analysis:
     mid: list = field(default_factory=list)
     high: list = field(default_factory=list)
     drops: list = field(default_factory=list)   # secunde
+    energy: int = 0               # 1..10 (estimare)
     error: str = ""
 
     @property
@@ -259,6 +260,40 @@ def estimate_key(x: np.ndarray, sr: int = SR) -> tuple[str, float]:
     return results[0][1], float(min(1.0, conf))
 
 
+# --- energie ------------------------------------------------------------------
+def estimate_energy(x: np.ndarray, sr: int = SR) -> int:
+    """Energie 1–10 (estimare, în stilul Mixed In Key): cât de tare, cât bas,
+    câtă percuție și cât de „luminos” sună partea principală a piesei."""
+    if len(x) < sr * 10:
+        return 0
+    seg = int(sr * 180)
+    if len(x) > seg:
+        start = (len(x) - seg) // 2
+        x = x[start:start + seg]
+    n_fft, hop = 2048, 1024
+    mag = _stft_mag(x, n_fft, hop)
+    freqs = np.fft.rfftfreq(n_fft, 1 / sr)
+    # volum (RMS pe cadre, partea tare a piesei)
+    frame = sr // 10
+    nfr = len(x) // frame
+    rms = np.sqrt((x[: nfr * frame].reshape(nfr, frame) ** 2).mean(axis=1) + 1e-12)
+    loud_db = 20 * np.log10(np.percentile(rms, 90) + 1e-9)            # ~ -25 (încet) … -6 (foarte tare)
+    loud = np.clip((loud_db + 24) / 16, 0, 1)
+    band = (freqs >= 30) & (freqs < 5000)
+    total = mag[:, band].sum(axis=1) + 1e-9
+    # bas: ce parte din energie stă în bas (kick + bass)
+    low = mag[:, (freqs >= 30) & (freqs < 150)].sum(axis=1)
+    bass = float(np.clip(np.median(low / total) / 0.22, 0, 1))
+    # percuție: cât de mult se schimbă spectrul de la un cadru la altul (atacuri)
+    flux = np.maximum(0, np.diff(mag[:, band], axis=0)).sum(axis=1) / total[1:]
+    onset = float(np.clip(np.mean(flux) / 0.35, 0, 1))
+    # luminozitate: centrul de greutate al spectrului
+    cent = (mag * freqs).sum(axis=1) / (mag.sum(axis=1) + 1e-9)
+    bright = np.clip((np.median(cent) - 600) / 1800, 0, 1)
+    score = 0.4 * loud + 0.25 * bass + 0.2 * onset + 0.15 * bright
+    return int(np.clip(round(1 + score * 9), 1, 10))
+
+
 # --- tot la un loc, cu cache ----------------------------------------------
 def cache_key(path: str) -> str:
     try:
@@ -303,6 +338,7 @@ def analyze(path: str, cache_dir: str | None = None, ffmpeg: str | None = None,
         a.drops = find_drops(low_e, frame_sec)
         a.bpm, a.bpm_confidence = estimate_bpm(x, SR, *bpm_range)
         a.key, a.key_confidence = estimate_key(x, SR)
+        a.energy = estimate_energy(x, SR)
     except Exception as e:
         a.error = str(e) or e.__class__.__name__
     if cache_dir and not a.error:

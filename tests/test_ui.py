@@ -88,6 +88,9 @@ def test_main_window_smoke(app, tmp_path):
     assert lv.table.proxy.rowCount() == 1
     lv.show_mixable(lv.items[0])
     assert lv.view == ("mix",)
+    lv.set_role(lv.items[:1], "Peak", write=False)
+    assert lv.items[0].role == "Peak" and lv.db.extra(lv.items[0].path).role == "Peak"
+    lv.role_f.setCurrentIndex(4)          # Peak
     lv.set_rating(lv.items[:1], 4)
     assert lv.db.extra(lv.items[0].path).rating == 4
     # playlist cu piesă dispărută

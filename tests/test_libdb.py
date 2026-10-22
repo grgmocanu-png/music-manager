@@ -70,3 +70,47 @@ def test_exports_roundtrip(tmp_path):
     tk = parse_traktor(str(n))
     assert len(tk.tracks) == 3 and len(tk.playlists["Set"]) == 3
     assert tk.tracks[norm_path(tracks[0].path)].key == "Am"
+
+
+def test_comment_roles_energy(tmp_path):
+    from music_manager.core.libdb import compose_comment, parse_comment, suggest_role
+    assert parse_comment("Deep House | Peak | E7") == ("Deep House", "Peak", 7)
+    assert parse_comment("Deep House, Minimal") == ("Deep House, Minimal", "", 0)
+    assert parse_comment("warm up | energy 4") == ("", "Warm-up", 4)
+    assert compose_comment("Deep House", "Peak", 7) == "Deep House | Peak | E7"
+    assert compose_comment("", "Closer") == "Closer"
+    assert suggest_role(8, 128) == "Peak"
+    assert suggest_role(2, 120) == "Opener"
+    assert suggest_role(3, 95) == "After"
+    assert suggest_role(8, 128, plays=3, avg_pos=0.95) == "Closer"
+
+    tracks = _tracks(tmp_path)
+    tracks[0].comment = "Breaks | Closer | E9"
+    db = LibraryDB(str(tmp_path / "db.json"))
+    db.extra(tracks[2].path).an_energy = 3
+    db.extra(tracks[3].path).role = "Opener"
+    items = build_items(tracks, db, [])
+    assert items[0].role == "Closer" and items[0].energy == 9 and items[0].style == "Breaks"
+    assert items[2].role == "" and items[2].role_suggested == "Opener"
+    r = {"rules": [{"field": "role", "op": "este oricare din", "value": "Opener"}]}
+    assert [i.track.title for i in smart_filter(items, r)] == ["Breathe"]
+    r = {"rules": [{"field": "role", "op": "este oricare din (inclusiv sugestii)", "value": "Opener"}]}
+    assert {i.track.title for i in smart_filter(items, r)} == {"Breathe", "Bad Kingdom"}
+    r = {"rules": [{"field": "energy", "op": "între", "value": [8, 10]}]}
+    assert [i.track.title for i in smart_filter(items, r)] == ["Glue"]
+
+
+def test_traktor_history(tmp_path):
+    from music_manager.core.libdb import parse_traktor_history
+    hist = tmp_path / "History"
+    hist.mkdir()
+    entries = "".join(f'<ENTRY><LOCATION DIR="/:m/:" FILE="t{i}.mp3" VOLUME="C:"></LOCATION></ENTRY>' for i in range(10))
+    keys = "".join(f'<ENTRY><PRIMARYKEY TYPE="TRACK" KEY="C:/:m/:t{i}.mp3"></PRIMARYKEY></ENTRY>' for i in range(10))
+    nml = (f'<NML VERSION="19"><COLLECTION>{entries}</COLLECTION><PLAYLISTS><NODE TYPE="FOLDER" NAME="$ROOT">'
+           f'<SUBNODES><NODE TYPE="PLAYLIST" NAME="HISTORY"><PLAYLIST TYPE="LIST">{keys}</PLAYLIST></NODE>'
+           f'</SUBNODES></NODE></PLAYLISTS></NML>')
+    (hist / "history_2026_10_01.nml").write_text(nml, encoding="utf-8")
+    h = parse_traktor_history(str(hist))
+    assert len(h) == 10
+    last = [v for k, v in h.items() if k.endswith("t9.mp3")][0]
+    assert last == [1.0]

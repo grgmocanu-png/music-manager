@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (
 from ..core import library as lib
 from ..core import tags as tagmod
 from ..core.genres import DEFAULT_FAMILIES, DEFAULT_STYLE_MAP, GenreMapper
-from ..core.libdb import RULE_FIELDS, RULE_OPS, artist_groups, describe_rule, genre_counts
+from ..core.libdb import (RULE_FIELDS, RULE_OPS, artist_groups, compose_comment, describe_rule, genre_counts,
+                          parse_comment)
 from ..core.namecleanup import clean_tag_fields, plan_name_cleanup
 from ..core.playlist import CAMELOT
 from .common import Task, settings, undo_dir
@@ -279,8 +280,9 @@ class TagFinderDialog(QDialog):
             if self.c_genre.isChecked():
                 if r.genre and (over or not t.genre):
                     f["genre"] = r.genre
-                if r.style_text and (over or not t.comment):
-                    f["comment"] = r.style_text
+                old_style, role, energy = parse_comment(t.comment)
+                if r.style_text and (over or not old_style):
+                    f["comment"] = compose_comment(r.style_text, role, energy)   # păstrăm rolul și energia
             if self.c_year.isChecked() and r.year and (over or not t.year):
                 f["year"] = r.year
             if self.c_label.isChecked() and r.label and (over or not t.label):
@@ -404,7 +406,7 @@ class BulkEditDialog(QDialog):
         g.addItems([""] + families())
         g.setCurrentText(common("genre"))
         add("genre", "Gen:", g)
-        add("comment", "Stil / comentariu:", QLineEdit(common("comment")))
+        add("comment", "Stil:", QLineEdit(""))
         add("artist", "Artist:", QLineEdit(common("artist")))
         add("album", "Album:", QLineEdit(common("album")))
         add("year", "An:", QLineEdit(common("year")))
@@ -541,8 +543,9 @@ class GenreCleanupDialog(QDialog):
             g = it.track.genre.strip()
             if g in mapping:
                 f = {"genre": mapping[g]}
-                if g and not it.track.comment and genre_mapper().family_of(g) != g:
-                    f["comment"] = g          # stilul vechi nu se pierde
+                style, role, energy = parse_comment(it.track.comment)
+                if g and not style and genre_mapper().family_of(g) != g:
+                    f["comment"] = compose_comment(g, role, energy)      # stilul vechi nu se pierde
                 jobs.append((it.path, f, None))
         if QMessageBox.question(self, "Confirmare", f"Scriu genul nou în {len(jobs)} fișiere?") != QMessageBox.Yes:
             return
@@ -642,18 +645,19 @@ class RuleRow(QWidget):
         f = self.field.currentData()
         self.op.clear()
         self.op.addItems(RULE_OPS.get(f, []))
-        rng = f in ("bpm", "year")
+        rng = f in ("bpm", "year", "energy")
         self.v2.setVisible(rng)
         self.dash.setVisible(rng)
         self.v1.setVisible(f not in ("in_traktor", "has_cover"))
         hints = {"genre": "ex. House, Disco", "bpm": "de la", "year": "de la", "key": "ex. 8A sau Am",
-                 "rating": "ex. 3", "added": "zile, ex. 30", "format": "ex. mp3, flac sau lossless"}
+                 "rating": "ex. 3", "added": "zile, ex. 30", "format": "ex. mp3, flac sau lossless",
+                 "role": "ex. Peak, Closer", "energy": "de la", "plays": "ex. 2"}
         self.v1.setPlaceholderText(hints.get(f, ""))
         self.v2.setPlaceholderText("până la")
 
     def rule(self) -> dict:
         f = self.field.currentData()
-        v = [self.v1.text().strip(), self.v2.text().strip()] if f in ("bpm", "year") else self.v1.text().strip()
+        v = [self.v1.text().strip(), self.v2.text().strip()] if f in ("bpm", "year", "energy") else self.v1.text().strip()
         return {"field": f, "op": self.op.currentText(), "value": v}
 
 

@@ -10,7 +10,7 @@ from PySide6.QtCore import (
     QAbstractTableModel, QMimeData, QModelIndex, QObject, QSortFilterProxyModel, QStandardPaths, Qt,
     QThread, QTimer, Signal,
 )
-from PySide6.QtGui import QAction, QBrush, QColor
+from PySide6.QtGui import QAction, QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSpinBox, QSplitter, QTableView,
@@ -32,7 +32,7 @@ from .dialogs import (
 from .player import PlayerPanel
 
 COLS = [("", "play"), ("#", "num"), ("Artist", "artist"), ("Titlu", "title"), ("Gen", "genre"),
-        ("Stil", "style"), ("BPM", "bpm"), ("Cheie", "key"), ("An", "year"), ("★", "rating"),
+        ("Stil", "style"), ("Rol", "role"), ("E", "energy"), ("BPM", "bpm"), ("Cheie", "key"), ("An", "year"), ("★", "rating"),
         ("Durată", "duration"), ("Label", "label"), ("Adăugată", "added"), ("Calitate", "quality"),
         ("Sursă BPM / cheie", "src"), ("Folder", "folder")]
 SORT_ROLE = Qt.UserRole + 1
@@ -122,7 +122,11 @@ class ItemModel(QAbstractTableModel):
             if col == "genre":
                 return t.genre
             if col == "style":
-                return t.comment
+                return it.style
+            if col == "role":
+                return it.role or (f"{it.role_suggested}?" if it.role_suggested else "")
+            if col == "energy":
+                return it.energy or ""
             if col == "bpm":
                 return (f"{it.bpm:.1f}".rstrip("0").rstrip(".")) if it.bpm else ""
             if col == "key":
@@ -154,6 +158,11 @@ class ItemModel(QAbstractTableModel):
                 return int(cam[:-1]) * 2 + (cam[-1] == "B") if cam else 99
             if col == "rating":
                 return it.rating
+            if col == "energy":
+                return it.energy
+            if col == "role":
+                r = it.role or it.role_suggested
+                return ldb.ROLES.index(r) if r in ldb.ROLES else 99
             if col == "duration":
                 return t.duration
             if col == "quality":
@@ -167,6 +176,8 @@ class ItemModel(QAbstractTableModel):
                 return QBrush(QColor("#c0392b" if it.missing else "#888888"))
             if col == "play" and it.path == self.playing:
                 return QBrush(QColor("#27ae60"))
+            if col == "role" and not it.role and it.role_suggested:
+                return QBrush(QColor("#999999"))
         if role == Qt.ToolTipRole:
             if it.offline:
                 return "Discul pe care e piesa nu e conectat: " + it.path
@@ -174,8 +185,20 @@ class ItemModel(QAbstractTableModel):
                 return "Fișierul nu mai există: " + it.path
             if col == "src":
                 return "De unde vine BPM-ul / tonalitatea (prioritatea se schimbă în Setări)"
+            if col == "role":
+                if it.role:
+                    return "Rol pus de tine. Tastele 1–6 schimbă rolul, 0 îl șterge."
+                if it.plays >= 2:
+                    return f"Sugestie din seturile tale: cântată de {it.plays} ori, în medie la {it.avg_pos:.0%} din set."
+                return "Sugestie din energie și BPM. Tastele 1–6: Opener, Warm-up, Build, Peak, Closer, After."
+            if col == "energy":
+                return f"Energie {it.energy}/10 (din {it.energy_src.lower()})" if it.energy else ""
             return it.path
-        if role == Qt.TextAlignmentRole and col in ("bpm", "year", "duration", "num", "play"):
+        if role == Qt.FontRole and col == "role" and not it.role and it.role_suggested:
+            f = QFont()
+            f.setItalic(True)
+            return f
+        if role == Qt.TextAlignmentRole and col in ("bpm", "year", "duration", "num", "play", "energy"):
             return int(Qt.AlignCenter)
         return None
 
@@ -188,8 +211,11 @@ class FilterProxy(QSortFilterProxyModel):
         self.genres: set[str] = set()
         self.bpm_lo = self.bpm_hi = 0
         self.keys: set[str] = set()
+        self.role = ""
+        self.role_sugg = False
 
-    def set_filters(self, text="", genres=(), bpm_lo=0, bpm_hi=0, key="", harmonic=False):
+    def set_filters(self, text="", genres=(), bpm_lo=0, bpm_hi=0, key="", harmonic=False, role="", role_sugg=False):
+        self.role, self.role_sugg = role, role_sugg
         self.words = lib.normalize(text).split()
         self.genres = {lib.normalize(g) for g in genres}
         self.bpm_lo, self.bpm_hi = bpm_lo, bpm_hi
@@ -209,10 +235,24 @@ class FilterProxy(QSortFilterProxyModel):
             return False
         if self.keys and it.camelot not in self.keys:
             return False
+        if self.role and (it.role_or_suggestion if self.role_sugg else it.role) != self.role:
+            return False
         return True
 
 
 class TrackTable(QTableView):
+    role_key = Signal(str)          # tastele 1–6 / 0
+
+    def keyPressEvent(self, e):
+        k = e.text()
+        if k and k in "0123456" and not e.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
+            self.role_key.emit("" if k == "0" else ldb.ROLES[int(k) - 1])
+            return
+        if e.key() == Qt.Key_Space:
+            self.role_key.emit("__play__")
+            return
+        super().keyPressEvent(e)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model_ = ItemModel(self)
@@ -232,17 +272,17 @@ class TrackTable(QTableView):
         h.setSectionResizeMode(QHeaderView.Interactive)
         h.setStretchLastSection(True)
         h.setSectionsMovable(True)
-        widths = [28, 38, 170, 230, 100, 130, 55, 85, 48, 60, 55, 110, 82, 120, 120]
+        widths = [28, 38, 170, 230, 100, 130, 70, 32, 55, 85, 48, 60, 55, 110, 82, 120, 120]
         for i, w in enumerate(widths):
             self.setColumnWidth(i, w)
-        state = settings().value("library/header")
+        state = settings().value("library/header2")
         if state is not None:
             try:
                 h.restoreState(state)
             except Exception:
                 pass
-        h.sectionResized.connect(lambda *_: settings().setValue("library/header", h.saveState()))
-        h.sectionMoved.connect(lambda *_: settings().setValue("library/header", h.saveState()))
+        h.sectionResized.connect(lambda *_: settings().setValue("library/header2", h.saveState()))
+        h.sectionMoved.connect(lambda *_: settings().setValue("library/header2", h.saveState()))
 
     def item_at(self, proxy_index) -> ldb.LibItem:
         return self.model_.items[self.proxy.mapToSource(proxy_index).row()]
@@ -394,6 +434,13 @@ class LibraryView(QWidget):
         for code, note in CAMELOT.items():
             self.key.addItem(f"{code}  {note}", code)
         self.harm = QCheckBox("+ compatibile")
+        self.role_f = QComboBox()
+        self.role_f.addItem("Orice rol", ("", False))
+        for r in ldb.ROLES:
+            self.role_f.addItem(r, (r, False))
+        for r in ldb.ROLES:
+            self.role_f.addItem(f"{r} (+ sugestii)", (r, True))
+        self.role_f.currentIndexChanged.connect(self.apply_filters)
         b_clear = QPushButton("✕")
         b_clear.setToolTip("Șterge filtrele")
         b_clear.setMaximumWidth(30)
@@ -417,6 +464,7 @@ class LibraryView(QWidget):
         bar.addWidget(self.bpm_hi)
         bar.addWidget(self.key)
         bar.addWidget(self.harm)
+        bar.addWidget(self.role_f)
         bar.addWidget(b_clear)
 
         self.title = QLabel()
@@ -433,6 +481,7 @@ class LibraryView(QWidget):
         self.table.clicked.connect(self._table_clicked)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
+        self.table.role_key.connect(self._role_key)
 
         self.player = PlayerPanel()
         self.player.request_next.connect(self._play_next)
@@ -498,12 +547,16 @@ class LibraryView(QWidget):
             tracks = lib.scan(folders, cache, lambda d, t: progress(d, t, f"Citesc tagurile: {d}/{t}"),
                               cancelled) if folders else []
             parsed = []
+            history = {}
             for name, path in cols:
+                if name == "Traktor":
+                    progress(0, 0, "Citesc istoricul seturilor din Traktor…")
+                    history = ldb.parse_traktor_history(os.path.join(os.path.dirname(path), "History"))
                 progress(0, 0, f"Citesc colecția {name}…")
                 c = {"Traktor": djc.parse_traktor, "Rekordbox": djc.parse_rekordbox_xml,
                      "VirtualDJ": djc.parse_virtualdj}[name](path)
                 parsed.append(c)
-            return tracks, parsed
+            return tracks, parsed, history
 
         self.task = Task(work, self)
         self.task.progress.connect(lambda d, t, txt: self.status.setText(txt))
@@ -515,7 +568,8 @@ class LibraryView(QWidget):
         self.task.start()
 
     def _loaded(self, result, quiet):
-        tracks, cols = result
+        tracks, cols, history = result
+        self.history = history
         self.b_reload.setEnabled(True)
         self.collections = cols
         self._col_mtimes = {c.path: c.mtime for c in cols}
@@ -525,6 +579,8 @@ class LibraryView(QWidget):
         msgs = [f"{len(self.items)} piese"]
         for c in cols:
             msgs.append(f"{c.source}: {len(c.tracks)} piese" if not c.error else f"{c.source}: eroare ({c.error[:60]})")
+        if history:
+            msgs.append(f"istoric Traktor: {len(history)} piese cântate în seturi")
         if not cols:
             msgs.append("nicio colecție DJ găsită (vezi Setări)")
         self.status.setText(" · ".join(msgs))
@@ -542,7 +598,12 @@ class LibraryView(QWidget):
                 a = an.load_cached(t.path, analysis_dir())
                 if a and not a.error:
                     e.an_bpm, e.an_key, e.an_drops = a.bpm, a.key, a.drops
-        self.items = ldb.build_items(self._tracks, self.db, self.collections, source_priority())
+            if not e.an_energy:
+                a = an.load_cached(t.path, analysis_dir())
+                if a and not a.error:
+                    e.an_energy = a.energy
+        self.items = ldb.build_items(self._tracks, self.db, self.collections, source_priority(),
+                                     getattr(self, "history", {}))
         self.by_path = {djc.norm_path(it.path): it for it in self.items}
         self.db.save()
         self._fill_genre_menu()
@@ -721,8 +782,9 @@ class LibraryView(QWidget):
     def apply_filters(self):
         genres = [a.text() for a in self.genre_menu.actions() if a.isCheckable() and a.isChecked()]
         self.genre_btn.setText(f"Gen: {', '.join(genres)[:30]} ▾" if genres else "Gen: toate ▾")
+        role, sugg = self.role_f.currentData() or ("", False)
         self.table.proxy.set_filters(self.search.text(), genres, self.bpm_lo.value(), self.bpm_hi.value(),
-                                     self.key.currentData() or "", self.harm.isChecked())
+                                     self.key.currentData() or "", self.harm.isChecked(), role, sugg)
         shown = self.table.proxy.rowCount()
         total = len(self.table.model_.items)
         dur = sum(it.track.duration for it in self.table.visible())
@@ -734,6 +796,7 @@ class LibraryView(QWidget):
         self.bpm_hi.setValue(0)
         self.key.setCurrentIndex(0)
         self.harm.setChecked(False)
+        self.role_f.setCurrentIndex(0)
         self._clear_genres()
 
     # ===== player =====
@@ -768,7 +831,7 @@ class LibraryView(QWidget):
 
     # ===== analiză =====
     def analyze_missing(self, silent=False):
-        todo = [it.path for it in self.items if (not it.bpm or not it.key) and not it.missing]
+        todo = [it.path for it in self.items if (not it.bpm or not it.key or not it.energy) and not it.missing]
         todo = [p for p in todo if an.load_cached(p, analysis_dir()) is None]
         if not todo:
             if not silent:
@@ -790,11 +853,13 @@ class LibraryView(QWidget):
     def _analysis_done(self, path, a):
         e = self.db.extra(path)
         if not a.error:
-            e.an_bpm, e.an_key, e.an_drops = a.bpm, a.key, a.drops
+            e.an_bpm, e.an_key, e.an_drops, e.an_energy = a.bpm, a.key, a.drops, a.energy
         it = self.by_path.get(djc.norm_path(path))
         if it is not None:
-            new = ldb.build_items([it.track], self.db, self.collections, source_priority())[0]
-            it.bpm, it.key, it.bpm_src, it.key_src, it.drops = new.bpm, new.key, new.bpm_src, new.key_src, new.drops
+            new = ldb.build_items([it.track], self.db, self.collections, source_priority(),
+                                  getattr(self, "history", {}))[0]
+            for f in ("bpm", "key", "bpm_src", "key_src", "drops", "energy", "energy_src", "role", "role_suggested"):
+                setattr(it, f, getattr(new, f))
             self.table.model_.refresh_row(path)
         if path == self.player.path:
             self.player.set_analysis(a)
@@ -819,6 +884,13 @@ class LibraryView(QWidget):
             m.addAction("Mută mai sus", lambda: self.move_in_playlist(sel, -1))
             m.addAction("Mută mai jos", lambda: self.move_in_playlist(sel, 1))
         m.addAction("🎚 Piese care se mixează cu asta", lambda: self.show_mixable(sel[0]))
+        rm = m.addMenu("Rol în set")
+        for i, r in enumerate(ldb.ROLES):
+            rm.addAction(f"{r}   ({i + 1})", lambda r=r: self.set_role(sel, r))
+        rm.addSeparator()
+        rm.addAction("Acceptă sugestiile", lambda: self.accept_suggestions(sel))
+        rm.addAction("Șterge rolul   (0)", lambda: self.set_role(sel, ""))
+        m.addAction("Scrie rolul și energia în Comentariu", lambda: self.write_role_energy(sel))
         m.addSeparator()
         m.addAction(f"Editează {len(sel)} piese…", lambda: self.bulk_edit(sel))
         r = m.addMenu("Rating")
@@ -832,8 +904,96 @@ class LibraryView(QWidget):
         exp.addAction("Playlist M3U…", lambda: self.export_m3u("Selecție", sel))
         exp.addAction("CSV…", lambda: self.export_csv(sel))
         m.addAction("Trimite la Conversie", lambda: self.state.send_to_convert.emit([i.path for i in sel]))
+        m.addAction("Caută în MixesDB (browser)", lambda: self.mixesdb(sel[0]))
         m.addAction("Arată în folder", lambda: reveal_in_folder(sel[0].path))
         m.exec(self.table.viewport().mapToGlobal(pos))
+
+    # ===== rol în set / energie =====
+    def _role_key(self, role):
+        sel = self.table.selected()
+        if not sel:
+            return
+        if role == "__play__":
+            if self.player.path == sel[0].path:
+                self.player.toggle()
+            else:
+                self.play(sel[0])
+            return
+        self.set_role(sel, role)
+
+    def set_role(self, items, role, write=True):
+        for it in items:
+            self.db.extra(it.path).role = role
+            it.role = role
+            if not role:
+                it.role_suggested = ldb.suggest_role(it.energy, it.bpm, it.plays, it.avg_pos)
+            self.table.model_.refresh_row(it.path)
+        self.db.save()
+        if write:
+            self._write_comments(items, quiet=True)
+
+    def accept_suggestions(self, items):
+        todo = [it for it in items if not it.role and it.role_suggested]
+        for it in todo:
+            self.db.extra(it.path).role = it.role_suggested
+            it.role = it.role_suggested
+            self.table.model_.refresh_row(it.path)
+        self.db.save()
+        self._write_comments(todo, quiet=True)
+
+    def write_role_energy(self, items):
+        self._write_comments(items, quiet=False)
+
+    def _write_comments(self, items, quiet):
+        jobs = []
+        for it in items:
+            if it.missing or it.offline:
+                continue
+            style, old_role, old_e = ldb.parse_comment(it.track.comment)
+            new = ldb.compose_comment(style, it.role, it.energy)
+            if new != it.track.comment:
+                jobs.append((it.path, {"comment": new}, None))
+                it.track.comment = new
+        if not jobs:
+            return
+        if not quiet and QMessageBox.question(
+                self, "Comentariu", f"Scriu rolul și energia în Comentariul a {len(jobs)} fișiere?\n"
+                "(ex. „Deep House | Peak | E7” — se vede în Traktor și Rekordbox)") != QMessageBox.Yes:
+            return
+        self._comment_jobs = getattr(self, "_comment_jobs", []) + jobs
+        if not getattr(self, "_comment_timer", None):
+            self._comment_timer = QTimer(self)
+            self._comment_timer.setSingleShot(True)
+            self._comment_timer.timeout.connect(self._flush_comments)
+        self._comment_timer.start(1500)      # grupăm apăsările rapide de taste
+
+    def _flush_comments(self):
+        jobs, self._comment_jobs = getattr(self, "_comment_jobs", []), []
+        if not jobs:
+            return
+        from ..core import tags as tagmod
+
+        def work(progress, cancelled):
+            errs = []
+            for path, f, _ in jobs:
+                try:
+                    cur = tagmod.read_tags(path).fields
+                    tagmod.write_tags(path, {**cur, **f})
+                except Exception as e:
+                    errs.append(f"{os.path.basename(path)}: {e}")
+            return errs
+
+        t = Task(work, self)
+        t.succeeded.connect(lambda errs: self.status.setText(
+            f"Am scris rolul în {len(jobs) - len(errs)} fișiere." + (f" {len(errs)} erori (fișiere deschise în alt program?)." if errs else "")))
+        self._comment_task = t
+        t.start()
+
+    def mixesdb(self, it):
+        import urllib.parse
+        import webbrowser
+        q = urllib.parse.quote_plus(f"{it.track.artist} {it.track.display_title}")
+        webbrowser.open(f"https://www.mixesdb.com/w/index.php?search={q}")
 
     def show_mixable(self, it):
         self.mix_base = it
@@ -861,7 +1021,15 @@ class LibraryView(QWidget):
                 e.user_key = dlg.result_key
         self.db.save()
         if dlg.result_fields:
-            jobs = [(it.path, dict(dlg.result_fields), None) for it in items if not it.missing]
+            jobs = []
+            for it in items:
+                if it.missing:
+                    continue
+                f = dict(dlg.result_fields)
+                if "comment" in f:      # stilul nou, cu rolul și energia păstrate
+                    _, role, energy = ldb.parse_comment(it.track.comment)
+                    f["comment"] = ldb.compose_comment(f["comment"], it.role or role, it.energy or energy)
+                jobs.append((it.path, f, None))
             write_tags_in_background(self, jobs, self.reload, f"Scriu tagurile în {len(jobs)} fișiere")
         else:
             self._rebuild_items()
