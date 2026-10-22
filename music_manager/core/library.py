@@ -92,7 +92,7 @@ def find_audio_files(folders: Iterable[str]) -> list[str]:
             # ignorăm folderele ascunse și pe cel de dubluri mutate
             dirs[:] = [d for d in dirs if not d.startswith(".") and d != DUPLICATES_FOLDER]
             for f in files:
-                if not f.startswith("._") and tagmod.is_audio_file(f):
+                if not f.startswith("._") and tagmod.is_audio_file(f) and not is_temp_file(f):
                     out.append(os.path.join(root, f))
     out.sort(key=lambda p: p.lower())
     return out
@@ -393,6 +393,36 @@ def _remove_empty_dirs(d: str) -> None:
             d = os.path.dirname(d)
     except OSError:
         pass
+
+
+def same_file(a: str, b: str) -> bool:
+    """True dacă a și b sunt același fișier (ex. diferă doar majusculele pe Windows / Mac)."""
+    try:
+        return os.path.exists(a) and os.path.exists(b) and os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def move_or_recase(src: str, dest: str) -> str:
+    """Mută fișierul; dacă destinația e același fișier cu alte majuscule, doar schimbă majusculele."""
+    if os.path.abspath(src) == os.path.abspath(dest):
+        return dest
+    if same_file(src, dest):
+        tmp = src + ".mmtmp"
+        os.rename(src, tmp)
+        os.rename(tmp, dest)
+        return dest
+    dest = unique_path(dest)
+    shutil.move(src, dest)
+    return dest
+
+
+TEMP_SUFFIXES = (".incomplete", ".mmtmp", ".tmp", ".part")
+
+
+def is_temp_file(name: str) -> bool:
+    n = name.lower()
+    return ".mmpart." in n or n.endswith(TEMP_SUFFIXES)
 
 
 def unique_path(path: str) -> str:

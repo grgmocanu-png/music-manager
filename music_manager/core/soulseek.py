@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from . import tags as tagmod
-from .library import safe_name, unique_path
+from .library import move_or_recase, safe_name, unique_path
 from .matching import search_query
 from .spotify import SpotifyTrack
 
@@ -228,9 +228,7 @@ def finalize_file(path: str, track: SpotifyTrack, out_dir: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     name = safe_name(f"{artist} - {title}") or os.path.splitext(os.path.basename(path))[0]
     dest = os.path.join(out_dir, name + ext)
-    if os.path.normcase(os.path.abspath(dest)) != os.path.normcase(os.path.abspath(path)):
-        dest = unique_path(dest)
-        shutil.move(path, dest)
+    dest = move_or_recase(path, dest)
     try:
         data = tagmod.read_tags(dest)
         new = {"artist": artist, "title": title, "album": track.album, "year": track.year}

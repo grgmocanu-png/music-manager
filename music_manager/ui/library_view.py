@@ -31,10 +31,11 @@ from .dialogs import (
 )
 from .player import PlayerPanel
 
-COLS = [("", "play"), ("#", "num"), ("Artist", "artist"), ("Titlu", "title"), ("Gen", "genre"),
+COLS = [("", "play"), ("#", "num"), ("Artist", "artist"), ("Titlu", "title"), ("Familie", "family"), ("Gen", "genre"),
         ("Stil", "style"), ("Rol", "role"), ("E", "energy"), ("BPM", "bpm"), ("Cheie", "key"), ("An", "year"), ("★", "rating"),
         ("Durată", "duration"), ("Label", "label"), ("Adăugată", "added"), ("Calitate", "quality"),
-        ("Sursă BPM / cheie", "src"), ("Folder", "folder")]
+        ("Sursă BPM / cheie", "src"), ("Playlisturi", "playlists"), ("Folder", "folder")]
+DEFAULT_HIDDEN = {"src", "folder", "quality"}
 SORT_ROLE = Qt.UserRole + 1
 MIME = "application/x-musicmanager-paths"
 
@@ -119,6 +120,10 @@ class ItemModel(QAbstractTableModel):
                 return t.artist
             if col == "title":
                 return t.display_title
+            if col == "family":
+                return it.family
+            if col == "playlists":
+                return ", ".join(it.playlists)
             if col == "genre":
                 return t.genre
             if col == "style":
@@ -213,9 +218,12 @@ class FilterProxy(QSortFilterProxyModel):
         self.keys: set[str] = set()
         self.role = ""
         self.role_sugg = False
+        self.families: set[str] = set()
 
-    def set_filters(self, text="", genres=(), bpm_lo=0, bpm_hi=0, key="", harmonic=False, role="", role_sugg=False):
+    def set_filters(self, text="", genres=(), bpm_lo=0, bpm_hi=0, key="", harmonic=False, role="", role_sugg=False,
+                    families=()):
         self.role, self.role_sugg = role, role_sugg
+        self.families = set(families)
         self.words = lib.normalize(text).split()
         self.genres = {lib.normalize(g) for g in genres}
         self.bpm_lo, self.bpm_hi = bpm_lo, bpm_hi
@@ -226,9 +234,12 @@ class FilterProxy(QSortFilterProxyModel):
         it = self.sourceModel().items[row]
         t = it.track
         if self.words:
-            hay = lib.normalize(" ".join([t.artist, t.title, t.album, t.genre, t.comment, t.label, t.filename]))
+            hay = lib.normalize(" ".join([t.artist, t.title, t.album, t.genre, t.comment, t.label, t.filename,
+                                          it.family, " ".join(it.playlists)]))
             if not all(w in hay for w in self.words):
                 return False
+        if self.families and it.family not in self.families:
+            return False
         if self.genres and lib.normalize(t.genre) not in self.genres:
             return False
         if (self.bpm_lo or self.bpm_hi) and not ldb._bpm_in(it.bpm, self.bpm_lo, self.bpm_hi):
@@ -272,17 +283,48 @@ class TrackTable(QTableView):
         h.setSectionResizeMode(QHeaderView.Interactive)
         h.setStretchLastSection(True)
         h.setSectionsMovable(True)
-        widths = [28, 38, 170, 230, 100, 130, 70, 32, 55, 85, 48, 60, 55, 110, 82, 120, 120]
+        widths = [28, 38, 170, 230, 95, 100, 130, 70, 32, 55, 85, 48, 60, 55, 110, 82, 120, 160, 120]
         for i, w in enumerate(widths):
             self.setColumnWidth(i, w)
-        state = settings().value("library/header2")
+        state = settings().value("library/header3")
+        restored = False
         if state is not None:
             try:
-                h.restoreState(state)
+                restored = h.restoreState(state)
             except Exception:
-                pass
-        h.sectionResized.connect(lambda *_: settings().setValue("library/header2", h.saveState()))
-        h.sectionMoved.connect(lambda *_: settings().setValue("library/header2", h.saveState()))
+                restored = False
+        if not restored:
+            for i, (_, key) in enumerate(COLS):
+                self.setColumnHidden(i, key in DEFAULT_HIDDEN)
+        h.sectionResized.connect(lambda *_: self._save_header())
+        h.sectionMoved.connect(lambda *_: self._save_header())
+        h.setContextMenuPolicy(Qt.CustomContextMenu)
+        h.customContextMenuRequested.connect(self._header_menu)
+
+    def _save_header(self):
+        settings().setValue("library/header3", self.horizontalHeader().saveState())
+
+    def _header_menu(self, pos):
+        """Click dreapta pe antet: alegi ce coloane vezi (ordinea o schimbi trăgând de antet)."""
+        m = QMenu(self)
+        m.addAction("Coloane afișate (trage de antet ca să schimbi ordinea):").setEnabled(False)
+        for i, (title, key) in enumerate(COLS):
+            if key in ("play", "num"):
+                continue
+            a = m.addAction(title)
+            a.setCheckable(True)
+            a.setChecked(not self.isColumnHidden(i))
+            a.toggled.connect(lambda on, i=i: (self.setColumnHidden(i, not on), self._save_header()))
+        m.addSeparator()
+        m.addAction("Revino la coloanele implicite", self._reset_columns)
+        m.exec(self.horizontalHeader().viewport().mapToGlobal(pos))
+
+    def _reset_columns(self):
+        h = self.horizontalHeader()
+        for i in range(len(COLS)):
+            h.moveSection(h.visualIndex(i), i)
+            self.setColumnHidden(i, COLS[i][1] in DEFAULT_HIDDEN)
+        self._save_header()
 
     def item_at(self, proxy_index) -> ldb.LibItem:
         return self.model_.items[self.proxy.mapToSource(proxy_index).row()]
@@ -328,8 +370,9 @@ class SideTree(QTreeWidget):
 
 
 # --------------------------------------------------------------------------
-class AnalysisWorker(QThread):
-    """Analizează piesele una câte una, în fundal. Cele cerute pentru player trec primele."""
+class AnalysisWorker(QObject):
+    """Analizează piesele una câte una, ca activitate în fundal (se poate pune pe pauză).
+    Cele cerute pentru player trec primele."""
     result = Signal(str, object)
     status = Signal(int)          # câte au rămas
 
@@ -338,6 +381,7 @@ class AnalysisWorker(QThread):
         self.queue: list[str] = []
         self.stop_flag = False
         self.bpm_range = (85, 175)
+        self.job = None
 
     def add(self, paths, front=False):
         new = [p for p in paths if p not in self.queue]
@@ -346,18 +390,30 @@ class AnalysisWorker(QThread):
         else:
             self.queue.extend(new)
         self.status.emit(len(self.queue))
-        if not self.isRunning():
-            self.start()
+        if self.job is None or not self.job.isRunning():
+            from .jobs import Job
+            self.job = Job("Analiză BPM / tonalitate / energie / waveform", self._loop, writes=False)
+            self.job.start()
 
-    def run(self):
+    def _loop(self, progress, cancelled):
+        done = 0
         while self.queue and not self.stop_flag:
+            if cancelled():
+                break
             path = self.queue.pop(0)
+            done += 1
+            progress(done, done + len(self.queue), os.path.basename(path))
             self.status.emit(len(self.queue))
             if not os.path.exists(path):
                 continue
             a = an.analyze(path, analysis_dir(), bpm_range=self.bpm_range)
             self.result.emit(path, a)
         self.status.emit(0)
+
+    def wait(self, ms=3000):
+        if self.job:
+            self.job.cancel()
+            self.job.wait(ms)
 
 
 # --------------------------------------------------------------------------
@@ -415,10 +471,28 @@ class LibraryView(QWidget):
         tm.addAction("Exportă toate playlisturile în Rekordbox (XML)", self.export_all_rekordbox)
         tm.addAction("Exportă toate playlisturile pentru Traktor (NML)", self.export_all_traktor)
         tools.setMenu(tm)
+        exp = QToolButton()
+        exp.setText("Exportă ▾")
+        exp.setPopupMode(QToolButton.InstantPopup)
+        em = QMenu(exp)
+        em.addAction("Ce e afișat acum → Traktor (NML)…", lambda: self.export_traktor(*self._current_for_export()))
+        em.addAction("Ce e afișat acum → M3U (orice player / stick)…", lambda: self.export_m3u(*self._current_for_export()))
+        em.addAction("Ce e afișat acum → copiază piesele pe stick / folder…", lambda: self.copy_to_folder(*self._current_for_export()))
+        em.addAction("Ce e afișat acum → CSV…", lambda: self.export_csv(self._current_for_export()[1]))
+        em.addSeparator()
+        em.addAction("Toate playlisturile mele → Rekordbox (XML)", self.export_all_rekordbox)
+        em.addAction("Toate playlisturile mele → Traktor (NML)", self.export_all_traktor)
+        exp.setMenu(em)
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Caută artist, titlu, gen, stil, label…")
         self.search.setClearButtonEnabled(True)
+        self.fam_btn = QToolButton()
+        self.fam_btn.setText("Familie: toate ▾")
+        self.fam_btn.setPopupMode(QToolButton.InstantPopup)
+        self.fam_menu = QMenu(self.fam_btn)
+        self.fam_btn.setMenu(self.fam_menu)
+        self.fam_btn.setStyleSheet("font-weight: bold;")
         self.genre_btn = QToolButton()
         self.genre_btn.setText("Gen: toate ▾")
         self.genre_btn.setPopupMode(QToolButton.InstantPopup)
@@ -455,8 +529,10 @@ class LibraryView(QWidget):
         bar = QHBoxLayout()
         bar.addWidget(self.b_reload)
         bar.addWidget(tools)
+        bar.addWidget(exp)
         bar.addSpacing(10)
         bar.addWidget(self.search, 1)
+        bar.addWidget(self.fam_btn)
         bar.addWidget(self.genre_btn)
         bar.addWidget(QLabel("BPM"))
         bar.addWidget(self.bpm_lo)
@@ -558,7 +634,8 @@ class LibraryView(QWidget):
                 parsed.append(c)
             return tracks, parsed, history
 
-        self.task = Task(work, self)
+        from .jobs import Job
+        self.task = Job("Încarc Biblioteca", work, writes=False)
         self.task.progress.connect(lambda d, t, txt: self.status.setText(txt))
         self.task.succeeded.connect(lambda r: self._loaded(r, quiet))
         self.task.failed.connect(lambda m: self.status.setText("Eroare la încărcare: " + m))
@@ -605,8 +682,41 @@ class LibraryView(QWidget):
         self.items = ldb.build_items(self._tracks, self.db, self.collections, source_priority(),
                                      getattr(self, "history", {}))
         self.by_path = {djc.norm_path(it.path): it for it in self.items}
+        self._annotate(self.items)
         self.db.save()
         self._fill_genre_menu()
+
+    def _annotate(self, items):
+        """Familia de gen și playlisturile în care apare fiecare piesă."""
+        from .dialogs import genre_mapper
+        mapper = genre_mapper()
+        member: dict[str, list[str]] = {}
+        for p in self.db.playlists:
+            if p.kind == "manual":
+                for t in p.tracks:
+                    member.setdefault(self._reloc(t), []).append(p.name)
+        for c in self.collections:
+            if c.error:
+                continue
+            for name, paths in c.playlists.items():
+                for t in paths:
+                    lst = member.setdefault(self._reloc(t), [])
+                    label = f"{c.source}: {name}"
+                    if label not in lst:
+                        lst.append(label)
+        for it in items:
+            g = it.track.genre.strip()
+            fam = mapper.family_of(g) if g else ""
+            if not fam:
+                style = it.style.split(",")[0].strip()
+                fam = mapper.family_of(style) if style else ""
+            it.family = fam
+            it.playlists = member.get(djc.norm_path(it.path), [])
+
+    def _reloc(self, path: str) -> str:
+        k = djc.norm_path(path)
+        new = self.db.relocations.get(k)
+        return djc.norm_path(new) if new else k
 
     def _periodic(self):
         """La câteva minute: piese noi în folderul de download sau colecții modificate în Traktor etc."""
@@ -691,7 +801,7 @@ class LibraryView(QWidget):
         out, seen = [], set()
         paths = [t for p in self.db.playlists for t in p.tracks]
         for path in paths:
-            k = djc.norm_path(path)
+            k = self._reloc(path)
             if k in self.by_path or k in seen:
                 continue
             seen.add(k)
@@ -707,7 +817,7 @@ class LibraryView(QWidget):
         out = []
         missing = {djc.norm_path(m.path): m for m in self._missing_items()}
         for p in paths:
-            k = djc.norm_path(p)
+            k = self._reloc(p)
             it = self.by_path.get(k) or missing.get(k)
             if it is None:
                 t = lib.Track(path=p, title=os.path.splitext(os.path.basename(p))[0])
@@ -754,7 +864,36 @@ class LibraryView(QWidget):
             self.table.sortByColumn(sort_col if sort_col > 1 else 2, sort_ord)
         self.apply_filters()
 
+    def _fill_family_menu(self):
+        current = {a.text().split("  (")[0] for a in self.fam_menu.actions() if a.isCheckable() and a.isChecked()}
+        self.fam_menu.clear()
+        a = self.fam_menu.addAction("Toate familiile")
+        a.triggered.connect(self._clear_families)
+        self.fam_menu.addSeparator()
+        counts: dict[str, int] = {}
+        for it in self.items:
+            counts[it.family or "(nerecunoscut)"] = counts.get(it.family or "(nerecunoscut)", 0) + 1
+        from .dialogs import families
+        order = families() + ["(nerecunoscut)"]
+        for f in order:
+            if f not in counts:
+                continue
+            act = QAction(f"{f}  ({counts[f]})", self.fam_menu)
+            act.setCheckable(True)
+            act.setChecked(f in current)
+            act.toggled.connect(self.apply_filters)
+            self.fam_menu.addAction(act)
+
+    def _clear_families(self):
+        for a in self.fam_menu.actions():
+            if a.isCheckable():
+                a.blockSignals(True)
+                a.setChecked(False)
+                a.blockSignals(False)
+        self.apply_filters()
+
     def _fill_genre_menu(self):
+        self._fill_family_menu()
         current = {a.text() for a in self.genre_menu.actions() if a.isCheckable() and a.isChecked()}
         self.genre_menu.clear()
         counts = ldb.genre_counts(self.items)
@@ -783,8 +922,11 @@ class LibraryView(QWidget):
         genres = [a.text() for a in self.genre_menu.actions() if a.isCheckable() and a.isChecked()]
         self.genre_btn.setText(f"Gen: {', '.join(genres)[:30]} ▾" if genres else "Gen: toate ▾")
         role, sugg = self.role_f.currentData() or ("", False)
+        fams = [a.text().split("  (")[0] for a in self.fam_menu.actions() if a.isCheckable() and a.isChecked()]
+        fams = ["" if f == "(nerecunoscut)" else f for f in fams]
+        self.fam_btn.setText(f"Familie: {', '.join(f or '?' for f in fams)[:30]} ▾" if fams else "Familie: toate ▾")
         self.table.proxy.set_filters(self.search.text(), genres, self.bpm_lo.value(), self.bpm_hi.value(),
-                                     self.key.currentData() or "", self.harm.isChecked(), role, sugg)
+                                     self.key.currentData() or "", self.harm.isChecked(), role, sugg, fams)
         shown = self.table.proxy.rowCount()
         total = len(self.table.model_.items)
         dur = sum(it.track.duration for it in self.table.visible())
@@ -797,6 +939,7 @@ class LibraryView(QWidget):
         self.key.setCurrentIndex(0)
         self.harm.setChecked(False)
         self.role_f.setCurrentIndex(0)
+        self._clear_families()
         self._clear_genres()
 
     # ===== player =====
@@ -874,11 +1017,21 @@ class LibraryView(QWidget):
         m = QMenu(self)
         m.addAction("▶ Redă", lambda: self.play(sel[0]))
         add = m.addMenu("Adaugă în playlist")
+        paths = [i.path for i in sel]
+        sugg, create = self._suggest_playlists(sel)
+        if sugg or create:
+            add.addAction("Potrivite (familie + BPM):").setEnabled(False)
+            for p in sugg:
+                add.addAction(f"★ {p.name}", lambda pid=p.id: self.add_to_playlist(pid, paths))
+            if create:
+                add.addAction(f"＋ Creează „{create}”", lambda name=create: self.new_playlist(paths, name))
+            add.addSeparator()
+            add.addAction("Toate playlisturile:").setEnabled(False)
         for p in self.db.playlists:
             if p.kind == "manual":
-                add.addAction(p.name, lambda pid=p.id: self.add_to_playlist(pid, [i.path for i in sel]))
+                add.addAction(p.name, lambda pid=p.id: self.add_to_playlist(pid, paths))
         add.addSeparator()
-        add.addAction("Playlist nou…", lambda: self.new_playlist([i.path for i in sel]))
+        add.addAction("Playlist nou…", lambda: self.new_playlist(paths))
         if self.view[0] == "pl":
             m.addAction("Scoate din playlist", lambda: self.remove_from_playlist(sel))
             m.addAction("Mută mai sus", lambda: self.move_in_playlist(sel, -1))
@@ -983,7 +1136,8 @@ class LibraryView(QWidget):
                     errs.append(f"{os.path.basename(path)}: {e}")
             return errs
 
-        t = Task(work, self)
+        from .jobs import Job
+        t = Job(f"Scriu rolul / energia ({len(jobs)})", work)
         t.succeeded.connect(lambda errs: self.status.setText(
             f"Am scris rolul în {len(jobs) - len(errs)} fișiere." + (f" {len(errs)} erori (fișiere deschise în alt program?)." if errs else "")))
         self._comment_task = t
@@ -994,6 +1148,28 @@ class LibraryView(QWidget):
         import webbrowser
         q = urllib.parse.quote_plus(f"{it.track.artist} {it.track.display_title}")
         webbrowser.open(f"https://www.mixesdb.com/w/index.php?search={q}")
+
+    def _suggest_playlists(self, sel):
+        """Playlisturile tale care se potrivesc piesei (aceeași familie, BPM în ±5), plus unul nou de creat."""
+        base = next((i for i in sel if i.family or i.bpm), None)
+        if not base:
+            return [], ""
+        out = []
+        for p in self.db.playlists:
+            if p.kind != "manual" or not p.tracks:
+                continue
+            fam, bpm = ldb.playlist_profile(self._resolve(p.tracks))
+            fam_ok = not base.family or not fam or fam == base.family
+            bpm_ok = not base.bpm or not bpm or ldb._bpm_in(base.bpm, bpm - 5, bpm + 5)
+            if fam_ok and bpm_ok and (fam == base.family or (bpm and base.bpm)):
+                out.append(p)
+        create = ""
+        if base.bpm:
+            lo, hi = ldb.bpm_bucket(base.bpm)
+            create = f"{base.family + ' ' if base.family else ''}{lo}–{hi}"
+            if any(p.name.lower() == create.lower() for p in self.db.playlists):
+                create = ""
+        return out[:8], create
 
     def show_mixable(self, it):
         self.mix_base = it
@@ -1055,21 +1231,22 @@ class LibraryView(QWidget):
             return
         from .settings_tab import spotify_client
         dlg = TagFinderDialog(tracks, spotify_client(), self)
-        if dlg.exec() == QDialog.Accepted and dlg.applied:
-            self.reload()
+        dlg.on_applied = self.reload
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.show()          # nu blochează: poți lucra în alte taburi cât caută
 
     def genre_cleanup(self):
         dlg = GenreCleanupDialog(self.items, self)
-        if dlg.exec() == QDialog.Accepted and dlg.applied:
-            self.reload()
+        dlg.on_applied = self.reload
+        dlg.exec()
 
     def artist_cleanup(self):
         dlg = ArtistCleanupDialog(self.items, self)
         if not dlg.groups:
             QMessageBox.information(self, "Artiști", "Nu am găsit artiști scriși în mai multe feluri.")
             return
-        if dlg.exec() == QDialog.Accepted and dlg.applied:
-            self.reload()
+        dlg.on_applied = self.reload
+        dlg.exec()
 
     def find_moved(self):
         missing = [m for m in self._missing_items() if m.missing]
@@ -1092,10 +1269,11 @@ class LibraryView(QWidget):
                                 + ("Restul nu mai sunt în folderele bibliotecii." if fixed < len(missing) else ""))
 
     # ===== playlisturi =====
-    def new_playlist(self, paths=None):
-        name, ok = QInputDialog.getText(self, "Playlist nou", "Nume:")
-        if not ok or not name.strip():
-            return
+    def new_playlist(self, paths=None, name=None):
+        if not name:
+            name, ok = QInputDialog.getText(self, "Playlist nou", "Nume:")
+            if not ok or not name.strip():
+                return
         p = self.db.new_playlist(name.strip())
         if paths:
             p.tracks = list(dict.fromkeys(paths))
@@ -1181,11 +1359,44 @@ class LibraryView(QWidget):
             m.addAction("Șterge", lambda: self._delete_pl(p))
         else:
             m.addAction("Copiază ca playlist propriu", lambda: self._copy_ext(name, items))
+        n_missing = sum(1 for i in items if i.missing or i.offline)
+        if n_missing:
+            m.addAction(f"Relocă piesele lipsă ({n_missing})… — alegi folderul unde sunt acum",
+                        lambda: self.relocate([i.path for i in items if i.missing or i.offline]))
         m.addSeparator()
         m.addAction("Exportă M3U (pentru orice player / stick)…", lambda: self.export_m3u(name, items))
         m.addAction("Exportă pentru Traktor (NML)…", lambda: self.export_traktor(name, items))
         m.addAction("Exportă CSV…", lambda: self.export_csv(items))
         m.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def relocate(self, paths):
+        folder = QFileDialog.getExistingDirectory(self, "În ce folder sunt acum piesele? (se caută și în subfoldere)")
+        if not folder:
+            return
+        from .jobs import Job
+        job = Job("Relocare piese", lambda progress, cancelled: ldb.relocate_by_name(paths, folder), writes=False)
+
+        def done(found):
+            for old, new in found.items():
+                self.db.relocations[djc.norm_path(old)] = new
+                for p in self.db.playlists:            # în playlisturile tale schimbăm direct calea
+                    p.tracks = [new if djc.norm_path(t) == djc.norm_path(old) else t for t in p.tracks]
+            self.db.save()
+            self._annotate(self.items)
+            self.rebuild_tree()
+            self.show_view(self.view)
+            QMessageBox.information(self, "Relocare", f"Am găsit {len(found)} din {len(paths)} piese lipsă."
+                                    + ("" if len(found) == len(paths) else
+                                       "\nRestul nu sunt în folderul ales (sau au alt nume de fișier)."))
+            if not any(djc.norm_path(f) == djc.norm_path(folder) or
+                       djc.norm_path(found_p).startswith(djc.norm_path(f)) for f in self.library_folders()
+                       for found_p in list(found.values())[:1]):
+                if found and QMessageBox.question(self, "Relocare", "Folderul nu e în Bibliotecă. Îl adaug, "
+                                                  "ca piesele să apară cu toate datele?") == QMessageBox.Yes:
+                    self.state.set_folders(self.state.folders + [os.path.normpath(folder)])
+                    self.reload()
+        job.succeeded.connect(done)
+        job.start()
 
     def _rename_pl(self, p):
         name, ok = QInputDialog.getText(self, "Redenumește", "Nume:", text=p.name)
@@ -1226,6 +1437,45 @@ class LibraryView(QWidget):
         self.show_view(("pl", q.id))
 
     # ===== export =====
+    def _current_for_export(self):
+        title, _ = self.items_for(self.view)
+        return title.lstrip("⚡ ").split(": ", 1)[-1], [i for i in self.table.visible() if not i.missing]
+
+    def copy_to_folder(self, name, items):
+        d = QFileDialog.getExistingDirectory(self, "Alege folderul sau stick-ul")
+        if not d:
+            return
+        dest_dir = os.path.join(d, lib.safe_name(name) or "Playlist")
+        numbered = QMessageBox.question(self, "Numerotare", "Pun numere în fața fișierelor, ca ordinea să se "
+                                        "păstreze pe playere (ex. „01 Artist - Titlu”)?") == QMessageBox.Yes
+        import shutil
+        from .jobs import Job
+
+        def work(progress, cancelled):
+            os.makedirs(dest_dir, exist_ok=True)
+            copied, errors = [], []
+            w = max(2, len(str(len(items))))
+            for i, it in enumerate(items, 1):
+                if cancelled():
+                    break
+                fname = os.path.basename(it.path)
+                if numbered:
+                    fname = f"{i:0{w}} {fname}"
+                dst = lib.unique_path(os.path.join(dest_dir, fname))
+                try:
+                    shutil.copy2(it.path, dst)
+                    copied.append(lib.Track(**{**it.track.__dict__, "path": dst}))
+                except OSError as e:
+                    errors.append(f"{fname}: {e.strerror or e}")
+                progress(i, len(items), fname)
+            write_m3u(os.path.join(dest_dir, (lib.safe_name(name) or "Playlist") + ".m3u8"), copied)
+            return len(copied), errors
+
+        job = Job(f"Copiez „{name}” pe stick ({len(items)})", work, writes=False)
+        job.succeeded.connect(lambda r: QMessageBox.information(
+            self, "Copiere", f"Am copiat {r[0]} piese în:\n{dest_dir}" + (f"\n{len(r[1])} erori." if r[1] else "")))
+        job.start()
+
     def export_m3u(self, name, items):
         path, _ = QFileDialog.getSaveFileName(self, "Exportă M3U", lib.safe_name(name) + ".m3u8", "M3U8 (*.m3u8)")
         if path:

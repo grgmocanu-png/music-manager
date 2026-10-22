@@ -62,17 +62,12 @@ def _item(text, color=None, tooltip=None, check=None):
 
 
 def write_tags_in_background(parent, jobs: list[tuple[str, dict, object]], on_done, title="Scriu tagurile"):
-    """jobs: (cale, câmpuri, copertă) — copertă = None, (bytes, mime) sau URL de descărcat."""
+    """Scrie tagurile în fundal, ca activitate (vezi bara de jos). Nu blochează fereastra.
+
+    jobs: (cale, câmpuri, copertă) — copertă = None, (bytes, mime) sau URL de descărcat.
+    """
     from ..core.tagsearch import TagFinder
-    dlg = QDialog(parent)
-    dlg.setWindowTitle(title)
-    bar = QProgressBar()
-    bar.setMaximum(len(jobs))
-    lbl = QLabel("…")
-    lay = QVBoxLayout(dlg)
-    lay.addWidget(lbl)
-    lay.addWidget(bar)
-    dlg.resize(420, 90)
+    from .jobs import Job
 
     def work(progress, cancelled):
         tf = TagFinder()
@@ -91,22 +86,48 @@ def write_tags_in_background(parent, jobs: list[tuple[str, dict, object]], on_do
             progress(i + 1, len(jobs), os.path.basename(path))
         return errors
 
-    task = Task(work, dlg)
-    task.progress.connect(lambda d, t, txt: (bar.setValue(d), lbl.setText(txt)))
+    job = Job(f"{title} ({len(jobs)})", work)
 
     def finished(errors):
-        dlg.accept()
-        if errors:
+        if errors and parent is not None:
             box = QMessageBox(QMessageBox.Warning, "Taguri", f"{len(errors)} fișiere nu au putut fi scrise "
                               "(poate sunt deschise în Traktor sau alt program).", parent=parent)
             box.setDetailedText("\n".join(errors))
-            box.exec()
-        on_done()
+            box.open()
+        if on_done:
+            on_done()
 
-    task.succeeded.connect(finished)
-    task.failed.connect(lambda m: (dlg.accept(), QMessageBox.warning(parent, "Eroare", m)))
-    task.start()
-    dlg.exec()
+    job.succeeded.connect(finished)
+    job.failed.connect(lambda m: QMessageBox.warning(parent, "Eroare", m) if parent is not None else None)
+    job.start()
+    return job
+
+
+def rename_in_background(parent, plan, on_done, title="Redenumesc fișierele"):
+    """Aplică un plan de redenumire ca activitate în fundal (cu anulare ulterioară)."""
+    from .common import undo_dir
+    from .jobs import Job
+    n = sum(1 for p in plan if p.status == "ok")
+
+    def work(progress, cancelled):
+        progress(0, n, "")
+        return lib.apply_renames(plan, undo_dir())
+
+    job = Job(f"{title} ({n})", work)
+
+    def finished(res):
+        moves, errors = res
+        if errors and parent is not None:
+            box = QMessageBox(QMessageBox.Warning, "Redenumire", f"Am redenumit {len(moves)} fișiere; "
+                              f"{len(errors)} nu au putut fi redenumite.", parent=parent)
+            box.setDetailedText("\n".join(errors))
+            box.open()
+        if on_done:
+            on_done()
+
+    job.succeeded.connect(finished)
+    job.start()
+    return job
 
 
 # --- taguri online -------------------------------------------------------------
@@ -222,7 +243,8 @@ class TagFinderDialog(QDialog):
                 progress(n + 1, len(todo), json.dumps({"row": i}))
             return True
 
-        self.task = Task(work, self)
+        from .jobs import Job
+        self.task = Job(f"Caut taguri online ({len(todo)} piese)", work, writes=False)
         self.task.progress.connect(self._progress)
         self.task.succeeded.connect(self._done)
         self.task.failed.connect(lambda m: (self._done(False), QMessageBox.warning(self, "Eroare", m)))
@@ -292,9 +314,8 @@ class TagFinderDialog(QDialog):
                 jobs.append((t.path, f, cover))
         if not jobs:
             return
-        write_tags_in_background(self, jobs, self._applied, f"Scriu tagurile în {len(jobs)} fișiere")
-
-    def _applied(self):
+        write_tags_in_background(self.parent(), jobs, getattr(self, "on_applied", None),
+                                 f"Scriu tagurile online")
         self.applied = True
         self.accept()
 
@@ -351,15 +372,11 @@ class NameCleanupDialog(QDialog):
         self.b_ok.setEnabled(n > 0 or bool(self.tag_jobs))
 
     def apply(self):
-        moved = {}
         if self.c_tags.isChecked() and self.tag_jobs:
-            write_tags_in_background(self, self.tag_jobs, lambda: None, "Curăț tagurile")
-        moves, errors = lib.apply_renames(self.plan, undo_dir())
+            write_tags_in_background(self.parent(), self.tag_jobs, None, "Curăț tagurile")
+        cb = getattr(self, "on_applied", None)
+        rename_in_background(self.parent(), self.plan, cb, "Curăț numele fișierelor")
         self.applied = True
-        msg = f"Am redenumit {len(moves)} fișiere."
-        if errors:
-            msg += f"\n{len(errors)} nu au putut fi redenumite."
-        QMessageBox.information(self, "Gata", msg)
         self.accept()
 
 
@@ -549,9 +566,7 @@ class GenreCleanupDialog(QDialog):
                 jobs.append((it.path, f, None))
         if QMessageBox.question(self, "Confirmare", f"Scriu genul nou în {len(jobs)} fișiere?") != QMessageBox.Yes:
             return
-        write_tags_in_background(self, jobs, self._done, "Scriu genurile")
-
-    def _done(self):
+        write_tags_in_background(self.parent(), jobs, getattr(self, "on_applied", None), "Scriu genurile")
         self.applied = True
         self.accept()
 
@@ -603,9 +618,7 @@ class ArtistCleanupDialog(QDialog):
         if not jobs:
             self.reject()
             return
-        write_tags_in_background(self, jobs, self._done, "Scriu artiștii")
-
-    def _done(self):
+        write_tags_in_background(self.parent(), jobs, getattr(self, "on_applied", None), "Scriu artiștii")
         self.applied = True
         self.accept()
 

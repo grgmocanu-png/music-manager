@@ -98,6 +98,27 @@ def test_main_window_smoke(app, tmp_path):
     lv.rebuild_tree()
     assert any(m.missing for m in lv._missing_items())
 
+    # familii, sugestii de playlist, coloana Playlisturi
+    daft = next(i for i in lv.items if i.track.artist == "Daft Punk")
+    assert daft.family == "House"
+    sugg, create = lv._suggest_playlists([daft])
+    assert create == "House 120–130"
+    assert "Set" in daft.playlists
+    lv.fam_menu.actions()[2].setChecked(True)
+    lv.clear_filters()
+    lv.table._reset_columns()
+
+    # activități în fundal: o operație care scrie fișiere, apoi una care așteaptă după ea
+    from music_manager.ui.jobs import Job, manager
+    order = []
+    j1 = Job("test 1", lambda p, c: (order.append(1), 1)[1])
+    j2 = Job("test 2", lambda p, c: (order.append(2), 2)[1])
+    j1.start()
+    j2.start()
+    _wait(app, j1)
+    _wait(app, j2)
+    assert order == [1, 2] and j2.status == "done"
+
     # player: waveform desenat din analiză simulată
     from music_manager.core.analysis import Analysis
     a = Analysis(bpm=128, key="Am", duration=200, peak=[100] * 50, low=[200] * 50, mid=[80] * 50,
@@ -164,6 +185,12 @@ def test_main_window_smoke(app, tmp_path):
     dt.notfound.table.selectRow(0)
     dt.notfound._remove_selected(ignore=False)
     assert "2" not in pp.current.not_found and "2" in pp.current.seen
+
+    # click pe playlist: arată ultima verificare salvată
+    pp.save_rows()
+    pp.current = None
+    pp.show_playlist("p1")
+    assert pp.current is not None and len(pp.rows) == 4
 
     # oprire: butoanele apar doar în timpul descărcării
     dt.set_busy("x", stoppable=True)

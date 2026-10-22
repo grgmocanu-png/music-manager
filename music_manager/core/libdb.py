@@ -136,6 +136,8 @@ class LibItem:
     key_src: str = ""
     date_added: str = ""
     in_traktor: bool = False
+    family: str = ""
+    playlists: list = field(default_factory=list)
     drops: list = field(default_factory=list)
     missing: bool = False
     offline: bool = False
@@ -168,6 +170,7 @@ class LibraryDB:
         self.path = path
         self.extras: dict[str, Extra] = {}
         self.playlists: list[Playlist] = []
+        self.relocations: dict[str, str] = {}      # cale veche (normalizată) -> cale nouă
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -176,6 +179,7 @@ class LibraryDB:
                     self.extras[k] = Extra(**v)
                 except TypeError:
                     pass
+            self.relocations = dict(data.get("relocations") or {})
             for p in data.get("playlists") or []:
                 try:
                     self.playlists.append(Playlist(**p))
@@ -189,7 +193,8 @@ class LibraryDB:
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"extras": {k: asdict(v) for k, v in self.extras.items()},
-                       "playlists": [asdict(p) for p in self.playlists]}, f, ensure_ascii=False)
+                       "playlists": [asdict(p) for p in self.playlists],
+                       "relocations": self.relocations}, f, ensure_ascii=False)
         os.replace(tmp, self.path)
 
     def extra(self, path: str) -> Extra:
@@ -280,12 +285,13 @@ def build_items(tracks: list[Track], db: LibraryDB, collections: list[Collection
 
 # --- reguli pentru playlisturi inteligente -----------------------------------
 RULE_FIELDS = {
-    "genre": "Gen", "style": "Stil / comentariu", "bpm": "BPM", "key": "Tonalitate", "year": "An",
+    "family": "Familie de gen", "genre": "Gen", "style": "Stil / comentariu", "playlist": "E în playlistul", "bpm": "BPM", "key": "Tonalitate", "year": "An",
     "rating": "Rating (stele)", "added": "Adăugată", "format": "Format", "artist": "Artist",
     "title": "Titlu", "label": "Label", "folder": "Folder", "in_traktor": "E în Traktor",
     "has_cover": "Are copertă", "role": "Rol în set", "energy": "Energie (1–10)", "plays": "Cântată în seturile mele",
 }
 RULE_OPS = {
+    "family": ["este oricare din", "nu este"], "playlist": ["conține"],
     "genre": ["este oricare din", "nu este"], "style": ["conține", "nu conține"],
     "bpm": ["între"], "key": ["este", "compatibilă cu"], "year": ["între"], "rating": ["cel puțin"],
     "added": ["în ultimele N zile"], "format": ["este oricare din"], "artist": ["conține", "nu conține"],
@@ -318,6 +324,11 @@ def rule_matches(it: LibItem, rule: dict) -> bool:
         wanted = {normalize(g) for g in _list(v)}
         hit = bool(genres & wanted)
         return hit if op != "nu este" else not hit
+    if f == "family":
+        hit = normalize(it.family) in {normalize(g) for g in _list(v)}
+        return hit if op != "nu este" else not hit
+    if f == "playlist":
+        return any(normalize(str(v)) in normalize(p) for p in it.playlists)
     if f in ("style", "artist", "title", "label", "folder"):
         hay = {"style": t.comment, "artist": t.artist, "title": t.display_title, "label": t.label,
                "folder": os.path.dirname(t.path)}[f]
@@ -552,6 +563,40 @@ def artist_groups(items: list[LibItem]) -> list[list[tuple[str, int]]]:
         if len(variants) > 1:
             groups.append(sorted(variants.items(), key=lambda kv: -kv[1]))
     return sorted(groups, key=lambda g: g[0][0].lower())
+
+
+def relocate_by_name(missing: list[str], folder: str) -> dict[str, str]:
+    """Caută fișierele lipsă într-un folder (cu subfoldere) după nume. Întoarce {cale veche: cale nouă}."""
+    from .library import find_audio_files
+    index: dict[str, list[str]] = {}
+    for f in find_audio_files([folder]):
+        index.setdefault(os.path.basename(f).lower(), []).append(f)
+    out = {}
+    for m in missing:
+        cands = index.get(os.path.basename(m.replace("\\", "/")).lower(), [])
+        if len(cands) == 1:
+            out[m] = cands[0]
+        elif len(cands) > 1:
+            # mai multe cu același nume: alegem pe cel cu cele mai multe foldere comune în cale
+            parts = set(m.replace("\\", "/").lower().split("/"))
+            out[m] = max(cands, key=lambda c: len(parts & set(c.replace("\\", "/").lower().split("/"))))
+    return out
+
+
+def playlist_profile(items: list[LibItem]) -> tuple[str, float]:
+    """Familia dominantă și BPM-ul median al unui playlist."""
+    fams: dict[str, int] = {}
+    for it in items:
+        if it.family:
+            fams[it.family] = fams.get(it.family, 0) + 1
+    bpms = sorted(it.bpm for it in items if it.bpm)
+    fam = max(fams.items(), key=lambda kv: kv[1])[0] if fams else ""
+    return fam, (bpms[len(bpms) // 2] if bpms else 0.0)
+
+
+def bpm_bucket(bpm: float, width: int = 10) -> tuple[int, int]:
+    lo = int(bpm // width * width)
+    return lo, lo + width
 
 
 def find_moved(missing_path: str, candidates_by_name: dict[str, list[Track]], size: int = 0) -> str:

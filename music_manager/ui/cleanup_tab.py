@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QProgressBar, QPushButton, QVBoxLayout, QWidget,
@@ -110,7 +111,8 @@ class CleanupTab(QWidget):
         def work(progress, cancelled):
             return lib.scan(folders, cache, lambda d, t: progress(d, t), cancelled)
 
-        self.task = Task(work, self)
+        from .jobs import Job
+        self.task = Job("Scanez pentru curățenie", work, writes=False)
         self.task.progress.connect(lambda d, t, _: (self.progress.setMaximum(max(t, 1)), self.progress.setValue(d),
                                                     self.status.setText(f"Citesc: {d} / {t}")))
         self.task.succeeded.connect(self._scanned)
@@ -137,8 +139,8 @@ class CleanupTab(QWidget):
             QMessageBox.information(self, "Dubluri", "Nu am găsit dubluri.")
             return
         dlg = DuplicatesDialog(groups, self)
-        if dlg.exec() == QDialog.Accepted and dlg.moved:
-            self._after_change()
+        dlg.on_applied = self._after_change
+        dlg.exec()
 
     def rename(self):
         tracks = self._targets()
@@ -146,8 +148,8 @@ class CleanupTab(QWidget):
             QMessageBox.information(self, "Nume curate", "Scanează mai întâi.")
             return
         dlg = RenameDialog(tracks, self)
-        if dlg.exec() == QDialog.Accepted and dlg.applied:
-            self._after_change()
+        dlg.on_applied = self._after_change
+        dlg.exec()
 
     def clean_names(self):
         tracks = self._targets()
@@ -156,8 +158,8 @@ class CleanupTab(QWidget):
             return
         from .dialogs import NameCleanupDialog
         dlg = NameCleanupDialog(tracks, self)
-        if dlg.exec() == QDialog.Accepted and dlg.applied:
-            self._after_change()
+        dlg.on_applied = self._after_change
+        dlg.exec()
 
     def tags_online(self):
         tracks = self._targets()
@@ -167,8 +169,9 @@ class CleanupTab(QWidget):
         from .dialogs import TagFinderDialog
         from .settings_tab import spotify_client
         dlg = TagFinderDialog(tracks, spotify_client(), self)
-        if dlg.exec() == QDialog.Accepted and dlg.applied:
-            self._after_change()
+        dlg.on_applied = self._after_change
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.show()          # nu blochează: poți adăuga playlisturi etc. cât caută
 
     def _after_change(self):
         self._refresh_undo()
@@ -191,7 +194,9 @@ class CleanupTab(QWidget):
         if QMessageBox.question(self, "Anulare", f"Pun la loc fișierele mutate la ultima operație "
                                 f"({last[1].get('kind')})?") != QMessageBox.Yes:
             return
-        ok, fail, _ = lib.undo_last(undo_dir())
-        QMessageBox.information(self, "Anulare", f"Am pus la loc {ok} fișiere." +
-                                (f"\n{fail} nu au putut fi puse la loc." if fail else ""))
-        self._after_change()
+        from .jobs import Job
+        job = Job("Anulez ultima operație", lambda progress, cancelled: lib.undo_last(undo_dir()))
+        job.succeeded.connect(lambda r: (QMessageBox.information(
+            self, "Anulare", f"Am pus la loc {r[0]} fișiere." + (f"\n{r[1]} nu au putut fi puse la loc." if r[1] else "")),
+            self._after_change()))
+        job.start()

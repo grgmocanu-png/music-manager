@@ -43,6 +43,9 @@ class MainWindow(QMainWindow):
         self.sections.setObjectName("sections")
         self.sections.currentChanged.connect(lambda _: self.download.refresh_buttons())
         self.setCentralWidget(self.sections)
+        from .jobs import JobsButton
+        self.jobs_button = JobsButton(self)
+        self.statusBar().addPermanentWidget(self.jobs_button)
         self.statusBar().addPermanentWidget(QLabel(f"v{__version__}"))
 
         geo = settings().value("window/geometry")
@@ -58,6 +61,16 @@ class MainWindow(QMainWindow):
             self.files.setCurrentWidget(widget)
 
     def closeEvent(self, e):
+        from PySide6.QtWidgets import QMessageBox
+        from .jobs import manager
+        writing = [j for j in manager().active() if j.writes]
+        if writing and QMessageBox.question(
+                self, "Activități în curs",
+                f"Mai sunt {len(writing)} activități care modifică fișiere ({writing[0].name}…).\n"
+                "Dacă închizi acum, se opresc. Închid oricum?") != QMessageBox.Yes:
+            e.ignore()
+            return
+        manager().shutdown()
         settings().setValue("window/geometry", self.saveGeometry())
         self.library.shutdown()
         for tab in (self.download, self.cleanup, self.convert, self.library, self.settings_tab):

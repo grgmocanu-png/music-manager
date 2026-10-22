@@ -293,13 +293,15 @@ class ConvertTab(QWidget):
 
         self.log.appendPlainText(f"— Pornesc conversia a {len(jobs)} fișiere în "
                                  f"{conv.PRESETS[key].label.split(' (')[0]} —")
-        self.task = Task(work, self)
+        from .jobs import Job
+        self.task = Job(f"Conversie: {len(jobs)} fișiere", work)
         self.task.progress.connect(self._on_progress)
         self.task.succeeded.connect(self._on_done)
         self.task.failed.connect(self._on_failed)
         self.progress.setMaximum(len(jobs))
         self.progress.setValue(0)
         self.b_start.setText("Oprește")
+        self.log.appendPlainText("(Dacă rulează altă activitate care modifică fișiere, conversia așteaptă să se termine.)")
         self.task.start()
 
     def _on_progress(self, done, total, txt):

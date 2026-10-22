@@ -23,6 +23,7 @@ class SavedPlaylist:
     baseline: str = ""     # piesele adăugate în Spotify înainte de data asta nu se mai bifează automat
     source: str = "spotify"                                # spotify | youtube
     first_seen: dict = field(default_factory=dict)         # id -> data primei verificări (pt. YouTube)
+    last_rows: list = field(default_factory=list)          # rezultatul ultimei verificări (afișat la click)
 
     def __post_init__(self):
         # compatibilitate cu versiunea în care not_found era id -> text

@@ -177,7 +177,8 @@ class DownloadRunner(QObject):
                                      retries=int(settings().value("slsk/retries", 20) or 20),
                                      concurrent=int(settings().value("slsk/concurrent", 5) or 5))
 
-        self.task = Task(work_fn, self)
+        from .jobs import Job
+        self.task = Job(f"Download Soulseek ({len(items)})", work_fn, pausable=False)
         self.task.progress.connect(self._progress)
         self.task.succeeded.connect(self._succeeded)
         self.task.failed.connect(self._failed)
@@ -439,7 +440,7 @@ class PlaylistsPanel(TrackTableBase):
                 w.deleteLater()
         for p in self.store.items:
             b = PlaylistButton(p)
-            b.clicked.connect(self.check)
+            b.clicked.connect(self.show_playlist)
             b.action.connect(self._playlist_action)
             b.set_selected(bool(self.current and self.current.id == p.id))
             self.buttons_box.addWidget(b)
@@ -494,6 +495,55 @@ class PlaylistsPanel(TrackTableBase):
             self.refresh_buttons()
         self.check(pid)
 
+    # --- ultima verificare (salvată) ---
+    def save_rows(self):
+        if not self.current:
+            return
+        out = []
+        for r in self.rows:
+            st = r.status if r.status not in ACTIVE else MISSING
+            out.append({"t": track_to_dict(r.track), "s": st, "p": r.path, "a": r.artist_q, "q": r.title_q,
+                        "d": r.detail})
+        self.current.last_rows = out
+        self.store.save()
+
+    def show_playlist(self, pid: str):
+        """Click pe un playlist: arată rezultatul ultimei verificări, fără să pornească una nouă."""
+        saved = self.store.get(pid)
+        if not saved:
+            return
+        if not saved.last_rows:
+            self.check(pid)
+            return
+        if self.runner.busy() and self.runner.owner is self:
+            QMessageBox.information(self, "Download", "Se descarcă acum din alt playlist; aștept să termine.")
+            self.refresh_buttons()
+            return
+        self.current = saved
+        self.rows = []
+        for d in saved.last_rows:
+            try:
+                t = track_from_dict(d["t"])
+            except (KeyError, TypeError):
+                continue
+            st = d.get("s", MISSING)
+            # ce s-a schimbat între timp în memoria playlistului
+            if t.id in saved.ignored:
+                st = IGNORED
+            elif st in (NOTFOUND, FAILED) and t.id not in saved.not_found:
+                st = HAVE if t.id in saved.seen else MISSING
+            elif st == DONE:
+                st = HAVE
+            self.rows.append(Row(t, st, d.get("p", ""), d.get("a", ""), d.get("q", ""), d.get("d", ""), saved.id))
+        self.refresh_buttons()
+        counts = {k: sum(1 for r in self.rows if r.status == k) for k in (HAVE, MISSING, OLD, DELETED, NOTFOUND)}
+        self.summary.setText(
+            f"<i>{saved.last_update_label}</i> — {len(self.rows)} piese · {counts[HAVE]} le ai · "
+            f"<b style='color:#e67e22'>{counts[MISSING]}</b> noi de descărcat · {counts[NOTFOUND]} negăsite. "
+            "Apasă <b>Verifică din nou</b> pentru o verificare nouă.")
+        self.filter.setCurrentIndex(0)
+        self.fill_table(auto_check=True)
+
     # --- verificare ---
     def check(self, pid: str):
         if (self.task and self.task.isRunning()) or self.runner.busy():
@@ -540,7 +590,8 @@ class PlaylistsPanel(TrackTableBase):
             tol = 15.0 if is_yt else 6.0      # pe YouTube clipurile au adesea intro/outro
             return pl, {t.id: matcher.find(t, duration_tol=tol) for t in pl.tracks}
 
-        self.task = Task(work, self)
+        from .jobs import Job
+        self.task = Job(f"Verific playlistul „{saved.name}”", work, writes=False)
         self.task.progress.connect(self.tab.show_progress)
         self.task.succeeded.connect(self._on_checked)
         self.task.failed.connect(self._on_check_failed)
@@ -618,6 +669,7 @@ class PlaylistsPanel(TrackTableBase):
         self.summary.setText(" · ".join(parts))
         self.filter.setCurrentIndex(0)
         self.fill_table(auto_check=True)
+        self.save_rows()
         self.changed.emit()
 
     # --- tabel ---
@@ -838,6 +890,8 @@ class PlaylistsPanel(TrackTableBase):
         if cur:
             cur.last_downloaded += len(summary.done) if summary else 0
             cur.last_missing = sum(1 for r in self.rows if r.status == MISSING)
+            if cur is self.current:
+                self.save_rows()
             self.store.save()
         self.refresh_buttons()
         self.fill_table()

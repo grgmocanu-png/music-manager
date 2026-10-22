@@ -178,20 +178,28 @@ class SettingsTab(QWidget):
         note.setStyleSheet("color: gray;")
         fl.addRow("", note)
 
-        inner = QWidget()
-        lay = QVBoxLayout(inner)
-        lay.addWidget(self._library_box())
-        lay.addWidget(sp_box)
-        lay.addWidget(sl_box)
-        lay.addWidget(self._tags_box())
-        lay.addWidget(self._dj_box())
-        lay.addStretch()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(inner)
+        from PySide6.QtWidgets import QTabWidget
+
+        def page(*widgets):
+            inner = QWidget()
+            lay = QVBoxLayout(inner)
+            for w in widgets:
+                lay.addWidget(w)
+            lay.addStretch()
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(inner)
+            return scroll
+
+        tags_box = self._tags_box()
+        self.tabs = QTabWidget()
+        self.tabs.addTab(page(self._library_box()), "📂 Foldere")
+        self.tabs.addTab(page(sp_box, sl_box, tags_box), "🔑 Conturi, API-uri, tokenuri")
+        self.tabs.addTab(page(self._dj_box()), "🎛 Programe DJ și export")
+        self.tabs.addTab(page(self._genres_box()), "🏷 Genuri")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
+        outer.addWidget(self.tabs)
         self._refresh()
 
     def _save_client_id(self):
@@ -306,7 +314,7 @@ class SettingsTab(QWidget):
 
     # ---------- Taguri ----------
     def _tags_box(self):
-        box = QGroupBox("Taguri online (Discogs) și genuri")
+        box = QGroupBox("Discogs (taguri online)")
         self.discogs = QLineEdit(settings().value("discogs/token", "") or "")
         self.discogs.setEchoMode(QLineEdit.Password)
         self.discogs.setPlaceholderText("lipește aici tokenul personal Discogs")
@@ -328,19 +336,26 @@ class SettingsTab(QWidget):
         self.mb = QCheckBox("Folosește și MusicBrainz (fără cont) când Discogs nu găsește")
         self.mb.setChecked(settings().value("tags/musicbrainz", True) not in (False, "false"))
         self.mb.toggled.connect(lambda v: settings().setValue("tags/musicbrainz", bool(v)))
-        from .dialogs import families
-        self.fam_label = QLabel(", ".join(families()))
-        self.fam_label.setWordWrap(True)
-        b_fam = QPushButton("Editează familiile și stilurile…")
-        b_fam.clicked.connect(self._edit_genres)
-        note = QLabel("Genul scris în fișier = familia (ex. House). Stilul exact (ex. Deep House) merge în Comentariu.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: gray;")
         f = QFormLayout(box)
         f.addRow("Token Discogs:", tw)
         f.addRow("", how)
         f.addRow("", self.mb)
-        f.addRow("Familii de gen:", self.fam_label)
+        return box
+
+    def _genres_box(self):
+        from .dialogs import families
+        box = QGroupBox("Familii de gen")
+        self.fam_label = QLabel(", ".join(families()))
+        self.fam_label.setWordWrap(True)
+        b_fam = QPushButton("Editează familiile și stilurile…")
+        b_fam.clicked.connect(self._edit_genres)
+        note = QLabel("Genul scris în fișier = familia (ex. House). Stilul exact (ex. Deep House) merge în "
+                      "Comentariu, împreună cu rolul în set și energia: „Deep House | Peak | E7”. În Bibliotecă, "
+                      "filtrul principal e Familia; genurile detaliate rămân vizibile în coloana Gen.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray;")
+        f = QFormLayout(box)
+        f.addRow("Familii:", self.fam_label)
         f.addRow("", b_fam)
         f.addRow("", note)
         return box
@@ -405,6 +420,19 @@ class SettingsTab(QWidget):
         f.addRow("", self._gray("Analiza alege BPM-ul între acest minim și dublul lui (ex. 85–175). "
                                 "Ajută la decizia „dublu sau jumătate”."))
 
+        docs = documents_dirs()[0] if documents_dirs() else os.path.expanduser("~")
+        self.rb_out = QLineEdit(settings().value("export/rekordbox_xml", "") or "")
+        self.rb_out.setPlaceholderText(os.path.join(docs, "Music Manager", "rekordbox.xml"))
+        self.rb_out.editingFinished.connect(lambda: settings().setValue("export/rekordbox_xml", self.rb_out.text().strip()))
+        self.tk_out = QLineEdit(settings().value("export/traktor_dir", "") or "")
+        self.tk_out.setPlaceholderText(os.path.join(docs, "Music Manager", "Traktor"))
+        self.tk_out.editingFinished.connect(lambda: settings().setValue("export/traktor_dir", self.tk_out.text().strip()))
+        f.addRow("Export Rekordbox (XML):", self.rb_out)
+        f.addRow("Export Traktor (folder NML):", self.tk_out)
+        f.addRow("", self._gray("Exportul îl pornești din Bibliotecă: butonul <b>Exportă ▾</b> de sus (ce e afișat sau "
+                                "toate playlisturile) sau click dreapta pe un playlist din stânga. "
+                                "În Rekordbox: Preferences → Advanced → rekordbox xml → alegi fișierul de mai sus. "
+                                "În Traktor: click dreapta pe Playlists → Import Playlist."))
         self.auto_rb = QCheckBox("Actualizează automat exportul pentru Rekordbox când schimb un playlist")
         self.auto_rb.setChecked(settings().value("export/auto_rekordbox", False) in (True, "true"))
         self.auto_rb.toggled.connect(lambda v: settings().setValue("export/auto_rekordbox", bool(v)))

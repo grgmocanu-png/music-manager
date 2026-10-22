@@ -119,7 +119,8 @@ class ManualSearchDialog(QDialog):
         def work_fn(progress, cancelled):
             return slsk.search(q, user, pw, exe, work)
 
-        self.task = Task(work_fn, self)
+        from .jobs import Job
+        self.task = Job(f"Caut pe Soulseek: {q}", work_fn, writes=False, pausable=False)
         self.task.succeeded.connect(self._done)
         self.task.failed.connect(self._failed)
         self.progress.setVisible(True)

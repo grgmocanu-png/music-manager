@@ -135,7 +135,8 @@ class LibraryTab(QWidget):
         def work(progress, cancelled):
             return lib.scan(folders, cache, lambda d, t: progress(d, t), cancelled)
 
-        self.task = Task(work, self)
+        from .jobs import Job
+        self.task = Job("Scanez biblioteca", work, writes=False)
         self.task.progress.connect(self._on_progress)
         self.task.succeeded.connect(lambda tracks: self._on_scanned(tracks, missing))
         self.task.failed.connect(self._on_failed)
@@ -274,9 +275,14 @@ class DuplicatesDialog(QDialog):
         if QMessageBox.question(self, "Confirmare",
                                 f"Mut {len(paths)} fișiere în foldere „_Dubluri”?") != QMessageBox.Yes:
             return
-        moves, errors = lib.move_to_duplicates(paths, undo_dir())
+        from .jobs import Job
+        parent = self.parent()
+        cb = getattr(self, "on_applied", None)
+        job = Job(f"Mut dublurile ({len(paths)})", lambda progress, cancelled: lib.move_to_duplicates(paths, undo_dir()))
+        job.succeeded.connect(lambda r: (report(parent, f"Am mutat {len(r[0])} fișiere în „_Dubluri”.", r[1]),
+                                         cb() if cb else None))
+        job.start()
         self.moved = True
-        report(self, f"Am mutat {len(moves)} fișiere.", errors)
         self.accept()
 
 
@@ -394,7 +400,7 @@ class RenameDialog(QDialog):
         if QMessageBox.question(self, "Confirmare", f"Redenumesc {n} fișiere?\n"
                                 "Operația se poate anula din butonul „Anulează ultima operație”.") != QMessageBox.Yes:
             return
-        moves, errors = lib.apply_renames(self.plan, undo_dir())
+        from .dialogs import rename_in_background
+        rename_in_background(self.parent(), self.plan, getattr(self, "on_applied", None))
         self.applied = True
-        report(self, f"Am redenumit {len(moves)} fișiere.", errors)
         self.accept()
