@@ -23,7 +23,16 @@ jobs:
       - name: Teste
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rf --tb=short 2>&1 | tee pytest.log
+      - name: Rezumatul erorilor
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "^(FAILED|ERROR)|Error|assert" pytest.log | head -25 | while IFS= read -r l; do echo "::error::$l"; done || true
+          tail -40 pytest.log | tr '\n' ' ' | cut -c1-3000 | sed 's/^/::error::TAIL /'
 
       - name: Descarcă Sockseek (macOS Intel)
         env:
