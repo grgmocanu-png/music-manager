@@ -120,6 +120,8 @@ class Extra:
     user_key: str = ""
     an_energy: int = 0
     role: str = ""                # rolul pus de tine
+    an_date: str = ""             # când a fost analizată
+    an_error: str = ""            # analiza a eșuat (nu se mai reîncearcă singură)
 
 
 @dataclass
@@ -154,6 +156,8 @@ class LibItem:
     role_suggested: str = ""
     plays: int = 0
     avg_pos: float = -1
+    analyzed: str = ""
+    an_error: str = ""
 
     @property
     def path(self) -> str:
@@ -281,6 +285,7 @@ def build_items(tracks: list[Track], db: LibraryDB, collections: list[Collection
         _, c_role, c_energy = parse_comment(t.comment)
         it.energy, it.energy_src = (c_energy, "Comentariu") if c_energy else (e.an_energy, "Analiză" if e.an_energy else "")
         it.role = e.role or c_role
+        it.analyzed, it.an_error = e.an_date, e.an_error
         pos = (history or {}).get(norm_path(t.path)) or []
         it.plays = len(pos)
         it.avg_pos = sum(pos) / len(pos) if pos else -1
@@ -588,6 +593,71 @@ def relocate_by_name(missing: list[str], folder: str) -> dict[str, str]:
             parts = set(m.replace("\\", "/").lower().split("/"))
             out[m] = max(cands, key=lambda c: len(parts & set(c.replace("\\", "/").lower().split("/"))))
     return out
+
+
+_LEAD_NUM = re.compile(r"^\s*(?:(?:cd|disc)\s*\d+\s*[-._]?\s*)?[a-d]?\d{1,2}(?:\s*[.)\]_\-–]+\s*|\s+)", re.I)
+_MID_NUM = re.compile(r"\s[-–]\s*\d{1,2}(?:\s*[.)\]_\-–]+\s*|\s+)")
+
+
+def clean_lookup_name(name: str) -> str:
+    """Numele unei piese lipsă, curățat pentru căutare: fără folder, extensie și număr de piesă.
+    „04. the limiñanas - que calor !” → „the limiñanas - que calor !”; „blue pearl - 01 little brother”
+    → „blue pearl - little brother”."""
+    base = os.path.basename((name or "").replace("\\", "/"))
+    stem, ext = os.path.splitext(base)
+    if ext.lower().lstrip(".") in ("mp3", "flac", "wav", "aiff", "aif", "m4a", "ogg", "opus", "wma", "alac", "aac"):
+        base = stem
+    base = base.replace("_", " ")
+    base = _LEAD_NUM.sub("", base, count=1)
+    base = _MID_NUM.sub(" - ", base)
+    return " ".join(base.split()).strip(" -.")
+
+
+def name_index(items: list) -> list:
+    """Cuvintele fiecărei piese (artist + titlu + numele fișierului), calculate o singură dată."""
+    out = []
+    for it in items:
+        if getattr(it, "missing", False) or getattr(it, "offline", False):
+            continue
+        t = it.track
+        out.append((it, set(normalize(f"{t.artist} {t.title} {os.path.splitext(os.path.basename(t.path))[0]}").split())))
+    return out
+
+
+def find_by_name(query: str, items: list, duration: float = 0, limit: int = 30,
+                 index: list | None = None) -> list[tuple[float, "LibItem"]]:
+    """Piesele din bibliotecă ce se potrivesc cu un nume (cuvintele căutării regăsite în
+    artist + titlu + numele fișierului). Întoarce [(scor 0..1, piesă)], cele mai bune primele."""
+    q = set(normalize(clean_lookup_name(query) if os.sep in query or "/" in query else query).split())
+    q = {w for w in q if w not in ("feat", "ft", "and", "original", "mix", "remix") or len(q) <= 2}
+    if not q:
+        return []
+    out = []
+    for it, hay in (index if index is not None else name_index(items)):
+        t = it.track
+        hit = len(q & hay) / len(q)
+        if hit < 0.5:
+            continue
+        score = hit
+        if duration and t.duration:
+            score += 0.2 if abs(t.duration - duration) < 4 else -0.2
+        out.append((score, it))
+    out.sort(key=lambda x: -x[0])
+    return out[:limit]
+
+
+def auto_match_by_name(query: str, items: list, duration: float = 0, index: list | None = None):
+    """O singură potrivire sigură (toate cuvintele, minim 2, fără egal) — altfel None."""
+    words = normalize(clean_lookup_name(query)).split()
+    if len(words) < 2:
+        return None
+    res = find_by_name(clean_lookup_name(query), items, duration, limit=3, index=index)
+    full = [(sc, it) for sc, it in res if sc >= 1.0 - 1e-9]
+    if not full:
+        return None
+    if len(full) > 1 and full[1][0] >= full[0][0] - 1e-9:
+        return None
+    return full[0][1]
 
 
 def playlist_profile(items: list[LibItem]) -> tuple[str, float, str]:

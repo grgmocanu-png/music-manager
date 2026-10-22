@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from ..core import library as lib
 from ..core.namecleanup import clean_tag_fields, plan_name_cleanup
-from .common import after_moves, fmt_duration, history, settings, undo_dir
+from .common import add_reveal_menu, after_moves, fmt_duration, history, settings, undo_dir
 
 STATUS = {
     "ok": ("Se redenumește", "#27ae60"),
@@ -51,6 +51,7 @@ class PlanTable(QWidget):
         b_all.clicked.connect(lambda: self._set_all(True))
         b_none.clicked.connect(lambda: self._set_all(False))
         self.table = QTableWidget(0, 5)
+        add_reveal_menu(self.table, lambda idx: self.plan[idx.row()].src)
         self.table.setHorizontalHeaderLabels(["", "Acum", "Devine", "Stare", "Motiv / detalii"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -353,6 +354,7 @@ class DuplicatesDialog(QDialog):
         tools.addWidget(self.include_done)
 
         self.tree = QTreeWidget()
+        add_reveal_menu(self.tree, lambda idx: getattr(self.tree.itemFromIndex(idx).data(0, Qt.UserRole), "path", ""))
         self.tree.setHeaderLabels(["Piesă", "Calitate", "Durată", "Cale"])
         for i, w in enumerate((340, 160, 60)):
             self.tree.setColumnWidth(i, w)
@@ -467,7 +469,16 @@ class DuplicatesDialog(QDialog):
                     return
                 break
         what = "în „_Dubluri”" if how == "move" else "în Coșul de gunoi"
-        if QMessageBox.question(self, "Confirmare", f"Trimit {len(paths)} fișiere {what}?") != QMessageBox.Yes:
+        to_move = []
+        if how == "trash":
+            from ..core.trash import split_by_bin
+            paths, to_move = split_by_bin(paths)
+        msg = f"Trimit {len(paths)} fișiere {what}?" if paths else ""
+        if to_move:
+            msg += ("\n\n" if msg else "") + (
+                f"{len(to_move)} fișiere sunt pe un disc fără Coș de gunoi (stick, card sau rețea), unde "
+                "Windows le-ar șterge definitiv. Pe acestea le mut în folderul „_Dubluri” de lângă ele.")
+        if QMessageBox.question(self, "Confirmare", msg) != QMessageBox.Yes:
             return
         from .jobs import Job
         from .library_tab import report
@@ -477,17 +488,20 @@ class DuplicatesDialog(QDialog):
 
         def work(progress, cancelled):
             if how == "move":
-                return lib.move_to_duplicates(paths, undo_dir())
+                return lib.move_to_duplicates(paths, undo_dir()), ([], [])
             from ..core.trash import to_trash
             done, errors = to_trash(paths)
-            return [(p, "") for p in done], errors
+            moved = lib.move_to_duplicates(to_move, undo_dir()) if to_move else ([], [])
+            return ([(p, "") for p in done], errors), moved
 
         def done(res):
-            moves, errors = res
+            (moves, errors), (moved, errors2) = res
             history().mark(checked_paths, "dubluri")
-            if how == "move":
-                after_moves(moves)
-            report(parent, f"Am trimis {len(moves)} fișiere {what}.", errors)
+            after_moves(moves if how == "move" else moved)
+            text = f"Am trimis {len(moves)} fișiere {what}."
+            if moved:
+                text += f"\n{len(moved)} fișiere (de pe discuri fără Coș) le-am mutat în „_Dubluri”."
+            report(parent, text, errors + errors2)
             if cb:
                 cb()
 

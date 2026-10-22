@@ -407,9 +407,9 @@ class SettingsTab(QWidget):
         f.addRow("", self._gray("Primul din listă câștigă. „Fișier” = ce e scris în tag (Serato, Mixed In Key); "
                                 "„Analiză” = analiza făcută de aplicație."))
 
-        self.auto_an = QCheckBox("Analizează automat piesele noi (BPM, tonalitate, waveform)")
-        self.auto_an.setChecked(settings().value("library/auto_analyze", True) not in (False, "false"))
-        self.auto_an.toggled.connect(lambda v: settings().setValue("library/auto_analyze", bool(v)))
+        self.auto_an = QCheckBox("Analizează automat piesele neanalizate la fiecare deschidere a Bibliotecii (BPM, tonalitate, waveform)")
+        self.auto_an.setChecked(settings().value("library/auto_analyze2", False) in (True, "true"))
+        self.auto_an.toggled.connect(lambda v: settings().setValue("library/auto_analyze2", bool(v)))
         f.addRow("Analiză:", self.auto_an)
         self.bpm_lo = QSpinBox()
         self.bpm_lo.setRange(60, 110)

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from ..core import library as lib
 from .common import (
-    AppState, Task, TrackTable, data_dir, fmt_duration, fmt_size, reveal_in_folder,
+    AppState, Task, TrackTable, data_dir, fmt_duration, fmt_size, reveal_in_folder, reveal_label,
     undo_dir,
 )
 
@@ -63,7 +63,7 @@ class LibraryTab(QWidget):
         # --- acțiuni ---
         b_conv = QPushButton("Trimite la Conversie")
         b_pl = QPushButton("Adaugă în playlist")
-        b_show = QPushButton("Arată în folder")
+        b_show = QPushButton(reveal_label())
         b_conv.clicked.connect(lambda: self._send(self.state.send_to_convert, paths=True))
         b_pl.clicked.connect(lambda: self._send(self.state.send_to_playlist, paths=False))
         b_show.clicked.connect(self.show_in_folder)

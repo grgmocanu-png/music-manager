@@ -51,6 +51,11 @@ def open_file(path: str) -> None:
 
 def reveal_in_folder(path: str) -> None:
     """Arată fișierul în Finder / Explorer."""
+    if not os.path.exists(path):
+        folder = os.path.dirname(path)
+        if os.path.isdir(folder):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        return
     try:
         if sys.platform == "darwin":
             subprocess.Popen(["open", "-R", path])
@@ -61,6 +66,38 @@ def reveal_in_folder(path: str) -> None:
     except Exception:
         pass
     QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
+
+
+def reveal_label() -> str:
+    return "📂 Arată în Finder" if sys.platform == "darwin" else (
+        "📂 Arată în Explorer" if sys.platform == "win32" else "📂 Arată în folder")
+
+
+def add_reveal_menu(view, path_fn) -> None:
+    """Click dreapta pe un rând → „Arată în Explorer / Finder” (și „Deschide”).
+    path_fn(index) întoarce calea fișierului de pe rândul respectiv (sau "")."""
+    from PySide6.QtWidgets import QMenu
+
+    def menu(pos):
+        idx = view.indexAt(pos)
+        if not idx.isValid():
+            return
+        try:
+            path = path_fn(idx) or ""
+        except Exception:  # noqa: BLE001
+            path = ""
+        if not path:
+            return
+        m = QMenu(view)
+        exists = os.path.exists(path)
+        a = m.addAction(reveal_label(), lambda: reveal_in_folder(path))
+        a.setEnabled(exists or os.path.isdir(os.path.dirname(path)))
+        b = m.addAction("▶ Deschide", lambda: open_file(path))
+        b.setEnabled(exists)
+        m.exec(view.viewport().mapToGlobal(pos))
+
+    view.setContextMenuPolicy(Qt.CustomContextMenu)
+    view.customContextMenuRequested.connect(menu)
 
 
 class Task(QThread):
@@ -275,6 +312,7 @@ class TrackTable(QTableView):
                 self.setColumnWidth(i, widths[col])
             if col in hidden_columns:
                 self.setColumnHidden(i, True)
+        add_reveal_menu(self, lambda idx: self.track_at(idx).path)
         self.double_click_handler = lambda t: open_file(t.path)
         self.doubleClicked.connect(lambda idx: self.double_click_handler(self.track_at(idx)))
 

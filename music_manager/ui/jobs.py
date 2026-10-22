@@ -155,6 +155,20 @@ class JobManager(QObject):
         if nxt:
             nxt._run()
 
+    def blocker(self, job: Job) -> Job | None:
+        """Activitatea după care așteaptă una aflată „În așteptare”."""
+        if job.status != QUEUED:
+            return None
+        return next((j for j in self.jobs if j is not job and j.writes and j.status in (RUNNING, PAUSED)), None) \
+            or next((j for j in self.jobs if j is not job and j.writes and j.status == QUEUED
+                     and self.jobs.index(j) < self.jobs.index(job)), None)
+
+    def start_now(self, job: Job):
+        """Pornește imediat o activitate din așteptare, fără să mai aștepte după celelalte."""
+        if job.status == QUEUED:
+            job._run()
+            self.changed.emit()
+
     def _job_done(self, job):
         self._pump()
         # păstrăm doar ultimele 40 de activități terminate
@@ -193,7 +207,7 @@ class JobsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Activități")
-        self.resize(820, 380)
+        self.resize(1000, 400)
         info = QLabel("Operațiile care modifică fișiere rulează pe rând, ca să nu lucreze două pe același "
                       "fișier. Poți închide fereastra asta și continua lucrul; activitățile merg mai departe.")
         info.setWordWrap(True)
@@ -201,9 +215,9 @@ class JobsDialog(QDialog):
         self.table.setHorizontalHeaderLabels(["Activitate", "Stare", "Progres", ""])
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.setColumnWidth(1, 110)
+        self.table.setColumnWidth(1, 220)
         self.table.setColumnWidth(2, 220)
-        self.table.setColumnWidth(3, 190)
+        self.table.setColumnWidth(3, 260)
         b_clear = QPushButton("Șterge din listă cele terminate")
         b_clear.clicked.connect(manager().clear_finished)
         close = QPushButton("Închide")
@@ -231,7 +245,16 @@ class JobsDialog(QDialog):
             name.setToolTip(j.error or j.text or j.name)
             self.table.setItem(i, 0, name)
             st = STATUS_TEXT[j.status] + (f": {j.error[:60]}" if j.status == FAILED else "")
-            self.table.setItem(i, 1, QTableWidgetItem(st))
+            tip = st
+            blk = manager().blocker(j)
+            if blk is not None:
+                why = " (e pe pauză)" if blk.status == PAUSED else ""
+                st = f"Așteaptă după: {blk.name}{why}"
+                tip = (f"Așteaptă să se termine „{blk.name}”{why}, ca să nu lucreze două activități pe "
+                       "aceleași fișiere. Poți apăsa „Pornește acum” dacă știi că sunt fișiere diferite.")
+            st_item = QTableWidgetItem(st)
+            st_item.setToolTip(tip)
+            self.table.setItem(i, 1, st_item)
             bar = self.table.cellWidget(i, 2)
             if not isinstance(bar, QProgressBar):
                 bar = QProgressBar()
@@ -249,11 +272,26 @@ class JobsDialog(QDialog):
                 b = QPushButton("Continuă")
                 b.clicked.connect(j.resume)
                 h.addWidget(b)
+            if j.status == QUEUED:
+                b = QPushButton("Pornește acum")
+                b.clicked.connect(lambda _=False, jj=j: self._start_now(jj))
+                h.addWidget(b)
             if j.isRunning():
                 c = QPushButton("Oprește")
                 c.clicked.connect(lambda _=False, jj=j: jj.cancel())
                 h.addWidget(c)
             self.table.setCellWidget(i, 3, w)
+
+
+    def _start_now(self, job):
+        from PySide6.QtWidgets import QMessageBox
+        blk = manager().blocker(job)
+        if blk is not None and QMessageBox.question(
+                self, "Pornește acum",
+                f"„{job.name}” așteaptă după „{blk.name}”.\n\nO pornesc acum, în paralel? E sigur doar dacă "
+                "cele două nu lucrează pe aceleași fișiere.") != QMessageBox.Yes:
+            return
+        manager().start_now(job)
 
 
 class JobsButton(QPushButton):

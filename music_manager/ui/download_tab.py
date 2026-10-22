@@ -25,7 +25,7 @@ from ..core import spotify as sp
 from ..core import youtube as yt
 from ..core.matching import Matcher, search_query, wide_query
 from ..core.sources import PlaylistStore, SavedPlaylist, track_from_dict, track_to_dict
-from .common import AppState, Task, data_dir, fmt_duration, open_file, reveal_in_folder, settings
+from .common import AppState, Task, data_dir, fmt_duration, open_file, reveal_in_folder, reveal_label, settings
 from .slsk_search import ManualSearchDialog
 from .settings_tab import (download_dir, playlist_subfolders, slsk_credentials, slsk_quality,
                            spotify_client)
@@ -780,7 +780,7 @@ class PlaylistsPanel(TrackTableBase):
         m.addAction("Copiază „Artist - Titlu”",
                     lambda: QGuiApplication.clipboard().setText(f"{r.track.artist} - {r.track.title}"))
         if r.path:
-            m.addAction("Arată în folder", lambda: reveal_in_folder(r.path))
+            m.addAction(reveal_label(), lambda: reveal_in_folder(r.path))
         m.exec(self.table.viewport().mapToGlobal(pos))
 
     def _checked_rows(self) -> list[int]:
@@ -1146,6 +1146,8 @@ class NotFoundPanel(TrackTableBase):
         m.addSeparator()
         m.addAction("Copiază „Artist - Titlu”",
                     lambda: QGuiApplication.clipboard().setText(f"{r.track.artist} - {r.track.title}"))
+        if r.path:
+            m.addAction(reveal_label(), lambda: reveal_in_folder(r.path))
         m.exec(self.table.viewport().mapToGlobal(pos))
 
     def _manual(self, i=None):

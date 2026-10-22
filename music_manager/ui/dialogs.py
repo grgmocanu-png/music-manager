@@ -19,7 +19,7 @@ from ..core.libdb import (RULE_FIELDS, RULE_OPS, artist_groups, compose_comment,
                           parse_comment)
 from ..core.namecleanup import clean_tag_fields, plan_name_cleanup
 from ..core.playlist import CAMELOT
-from .common import Task, settings, undo_dir
+from .common import Task, add_reveal_menu, settings, undo_dir
 
 
 # --- setări comune ------------------------------------------------------------
@@ -170,6 +170,7 @@ class TagFinderDialog(QDialog):
         opts.addStretch()
 
         self.table = _table(self.COLS, (28, 300, 150, 200, 60, 140, 70, 160))
+        add_reveal_menu(self.table, lambda idx: self.tracks[idx.row()].path)
         b_all, b_none, b_new = QPushButton("Bifează tot"), QPushButton("Debifează tot"), \
             QPushButton("Bifează doar ce n-a fost verificat")
         b_all.clicked.connect(lambda: self._set_checks(lambda i: True))

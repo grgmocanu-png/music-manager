@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from ..core import convert as conv
 from ..core import tags as tagmod
 from ..core.library import RENAME_PRESETS, find_audio_files
-from .common import AppState, Task, settings
+from .common import AppState, Task, add_reveal_menu, settings
 
 SOURCE_FILTERS = {
     "Doar FLAC": {".flac"},
@@ -60,6 +60,7 @@ class ConvertTab(QWidget):
 
         # --- fișiere sursă ---
         self.list = FileList(self.add_paths)
+        add_reveal_menu(self.list, lambda idx: self.list.item(idx.row()).text())
         self.source_filter = QComboBox()
         self.source_filter.addItems(SOURCE_FILTERS.keys())
         b_files = QPushButton("Adaugă fișiere…")

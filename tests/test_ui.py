@@ -105,6 +105,16 @@ def test_main_window_smoke(app, tmp_path):
     assert lv._suggest_playlists([daft], "family")[1] == ""      # există deja „House”
     assert lv._suggest_playlists([daft], "title") == ([], "")
     assert "Set" in daft.playlists
+    # v0.9: Curăță categorii, căutare piesă lipsă, coloane în engleză
+    from music_manager.ui.library_dialogs import CategoryCleanupDialog, FindInLibraryDialog
+    cd = CategoryCleanupDialog(lv.items, "comment", win)
+    assert cd.table.rowCount() >= 1
+    cd2 = CategoryCleanupDialog(lv.items, "artist", win)
+    assert cd2.table.rowCount() >= 1
+    miss = ldb.LibItem(track=Track(path=str(tmp_path / "old" / "08. daft punk - x.mp3")), missing=True)
+    fd = FindInLibraryDialog(miss, lv.items, win)
+    assert fd.query.text().startswith("daft punk")
+    assert [c for c, _ in __import__("music_manager.ui.library_view", fromlist=["COLS"]).COLS][6] == "Comments"
     lv.fam_menu.actions()[2].setChecked(True)
     lv.clear_filters()
     lv.table._reset_columns()
@@ -222,3 +232,19 @@ def test_main_window_smoke(app, tmp_path):
     assert d.chosen is not None
 
     win.close()
+
+
+def test_jobs_start_now(app):
+    import threading
+    from music_manager.ui.jobs import QUEUED, RUNNING, Job, manager
+    gate = threading.Event()
+    a = Job("A", lambda p, c: gate.wait(5))
+    b = Job("B", lambda p, c: 1)
+    a.start()
+    b.start()
+    assert b.status == QUEUED and manager().blocker(b) is not None
+    manager().start_now(b)
+    assert b.status in (RUNNING, "done")
+    gate.set()
+    a.wait(3000)
+    b.wait(3000)

@@ -21,3 +21,28 @@ def test_bpm_key_drop(tmp_path):
         assert len(a.peak) == an.WAVE_BINS and max(a.low) == 255
         # a doua oară vine din cache
         assert an.load_cached(p, str(tmp_path / "cache")).bpm == a.bpm
+
+
+def test_cache_failures_dates_and_drive_change(tmp_path):
+    import shutil
+    cache = str(tmp_path / "cache")
+    bad = tmp_path / "bad.mp3"
+    bad.write_bytes(b"not audio" * 50)
+    a = an.analyze(str(bad), cache)
+    assert a.error and a.analyzed_at
+    # eșecul e ținut minte: nu se reîncearcă singur
+    again = an.load_cached(str(bad), cache)
+    assert again is not None and again.error
+    assert an.cached_date(str(bad), cache)
+    # analiza o găsim și când fișierul apare la altă cale (ex. discul a primit altă literă)
+    p = str(tmp_path / "d1" / "Artist - Song.wav")
+    os.makedirs(os.path.dirname(p))
+    make(p, bpm=125, key_notes=(57, 60, 64), bass_root=45, dur=30, brk=(10, 20))
+    first = an.analyze(p, cache)
+    q = str(tmp_path / "d2" / "Artist - Song.wav")
+    os.makedirs(os.path.dirname(q))
+    shutil.copy(p, q)
+    got = an.load_cached(q, cache)
+    assert got is not None and got.bpm == first.bpm
+    # force reanalizează
+    assert an.analyze(str(bad), cache, force=True).error

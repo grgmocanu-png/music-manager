@@ -43,6 +43,7 @@ class Analysis:
     drops: list = field(default_factory=list)   # secunde
     energy: int = 0               # 1..10 (estimare)
     error: str = ""
+    analyzed_at: str = ""         # când a fost analizată (ISO)
 
     @property
     def has_waveform(self) -> bool:
@@ -311,22 +312,69 @@ def cache_key(path: str) -> str:
     return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
 
 
+def alias_key(path: str) -> str:
+    """Cheie fără literă de disc / folder: numele fișierului + mărimea.
+    Așa analiza se găsește și când discul extern primește altă literă (D: → E:)."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return ""
+    raw = f"{os.path.basename(path).lower()}|{size}|v{ANALYSIS_VERSION}"
+    return "n_" + hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
+
+
+def _read(p: str) -> Analysis | None:
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return Analysis(**json.load(f))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def load_cached(path: str, cache_dir: str) -> Analysis | None:
+    """Analiza salvată (și cele eșuate — ca să nu fie reîncercate la nesfârșit). None = neanalizată."""
     p = os.path.join(cache_dir, cache_key(path) + ".json")
-    old = os.path.join(cache_dir, _old_key(path) + ".json")
-    for candidate in (p, old):
-        try:
-            with open(candidate, "r", encoding="utf-8") as f:
-                a = Analysis(**json.load(f))
-        except (OSError, ValueError, TypeError):
-            continue
-        if candidate == old:            # migrăm la cheia nouă
-            try:
-                os.replace(old, p)
-            except OSError:
-                pass
+    a = _read(p)
+    if a is not None:
+        ak = alias_key(path)
+        if ak and not os.path.exists(os.path.join(cache_dir, ak + ".json")):
+            _write_alias(path, cache_dir)
         return a
+    old = os.path.join(cache_dir, _old_key(path) + ".json")
+    a = _read(old)
+    if a is not None:                   # migrăm la cheia nouă
+        try:
+            os.replace(old, p)
+        except OSError:
+            pass
+        _write_alias(path, cache_dir)
+        return a
+    ak = alias_key(path)
+    if ak:
+        try:
+            with open(os.path.join(cache_dir, ak + ".json"), "r", encoding="utf-8") as f:
+                target = json.load(f).get("key", "")
+        except (OSError, ValueError, AttributeError):
+            target = ""
+        a = _read(os.path.join(cache_dir, target + ".json")) if target else None
+        if a is not None:               # același fișier, altă cale: copiem la calea nouă
+            save_cached(path, cache_dir, a)
+            return a
     return None
+
+
+def cached_date(path: str, cache_dir: str, a: Analysis | None = None) -> str:
+    a = a or load_cached(path, cache_dir)
+    if a is None:
+        return ""
+    if a.analyzed_at:
+        return a.analyzed_at
+    try:
+        from datetime import datetime
+        mt = os.path.getmtime(os.path.join(cache_dir, cache_key(path) + ".json"))
+        return datetime.fromtimestamp(mt).isoformat(timespec="minutes")
+    except OSError:
+        return ""
 
 
 def move_cached(old_path: str, new_path: str, cache_dir: str) -> None:
@@ -338,6 +386,18 @@ def move_cached(old_path: str, new_path: str, cache_dir: str) -> None:
             os.replace(a, b)
     except OSError:
         pass
+    _write_alias(new_path, cache_dir)
+
+
+def _write_alias(path: str, cache_dir: str) -> None:
+    ak = alias_key(path)
+    if not ak:
+        return
+    try:
+        with open(os.path.join(cache_dir, ak + ".json"), "w", encoding="utf-8") as f:
+            json.dump({"key": cache_key(path)}, f)
+    except OSError:
+        pass
 
 
 def save_cached(path: str, cache_dir: str, a: Analysis) -> None:
@@ -347,15 +407,18 @@ def save_cached(path: str, cache_dir: str, a: Analysis) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(asdict(a), f, separators=(",", ":"))
     os.replace(tmp, p)
+    _write_alias(path, cache_dir)
 
 
 def analyze(path: str, cache_dir: str | None = None, ffmpeg: str | None = None,
-            bpm_range: tuple[float, float] = (85, 175)) -> Analysis:
-    if cache_dir:
+            bpm_range: tuple[float, float] = (85, 175), force: bool = False) -> Analysis:
+    """force=True: analizează din nou chiar dacă există deja (sau a eșuat înainte)."""
+    if cache_dir and not force:
         cached = load_cached(path, cache_dir)
         if cached is not None:
             return cached
-    a = Analysis()
+    from datetime import datetime
+    a = Analysis(analyzed_at=datetime.now().isoformat(timespec="minutes"))
     try:
         x = decode(path, ffmpeg)
         a.duration = len(x) / SR
@@ -368,6 +431,6 @@ def analyze(path: str, cache_dir: str | None = None, ffmpeg: str | None = None,
         a.energy = estimate_energy(x, SR)
     except Exception as e:
         a.error = str(e) or e.__class__.__name__
-    if cache_dir and not a.error:
-        save_cached(path, cache_dir, a)
+    if cache_dir:
+        save_cached(path, cache_dir, a)      # și eșecurile: nu le mai reîncercăm singuri
     return a

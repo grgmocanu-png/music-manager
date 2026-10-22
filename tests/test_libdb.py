@@ -142,3 +142,34 @@ def test_trash_and_bpm_exact(tmp_path):
         f.write_bytes(b"x")
         done, errs = to_trash([str(f)])
         assert done == [str(f)] and not f.exists()
+
+
+def test_clean_lookup_and_find_by_name():
+    from music_manager.core.libdb import LibItem, auto_match_by_name, clean_lookup_name, find_by_name
+    from music_manager.core.library import Track
+    assert clean_lookup_name("D:/x/04. the limiñanas - que calor ! (feat. edi.mp3") == "the limiñanas - que calor ! (feat. edi"
+    assert clean_lookup_name("08. murder in fugue") == "murder in fugue"
+    assert clean_lookup_name("blue pearl - 01 little brother") == "blue pearl - little brother"
+    assert clean_lookup_name("04-great_day.mp3") == "great day"
+    assert clean_lookup_name("808 State - Pacific") == "808 State - Pacific"
+    items = [LibItem(track=Track(path="/m/The Limiñanas - Que Calor.mp3", artist="The Limiñanas", title="Que Calor !")),
+             LibItem(track=Track(path="/m/Some Artist - Murder in Fugue.flac", artist="Some Artist", title="Murder in Fugue")),
+             LibItem(track=Track(path="/m/Other - Fugue State.mp3", artist="Other", title="Fugue State"))]
+    res = find_by_name("murder in fugue", items)
+    assert res[0][1] is items[1]
+    assert auto_match_by_name("E:/old/08. murder in fugue.mp3", items) is items[1]
+    assert auto_match_by_name("E:/old/04. the limiñanas - que calor !.mp3", items) is items[0]
+    assert auto_match_by_name("E:/old/01 - salento.mp3", items) is None
+
+
+def test_categories():
+    from music_manager.core import categories as cat
+    from music_manager.core.library import Track
+    assert cat.remove_text("02 Danceability", "danceability") == ""
+    assert cat.remove_text("Deep House | 04 Danceability | Peak | E7", "Danceability") == "Deep House | Peak | E7"
+    assert cat.remove_text("Techno", "Danceability") == "Techno"
+    assert cat.replace_text("Deep house", "deep house", "Deep House") == "Deep House"
+    ts = [Track(path="/a.mp3", comment="02 Danceability"), Track(path="/b.mp3", comment="Techno")]
+    pl = cat.plan(ts, "comment", lambda v: cat.remove_text(v, "Danceability"))
+    assert pl == [("/a.mp3", "02 Danceability", "")]
+    assert cat.value_counts(["a", "b", "a"]) == [("a", 2), ("b", 1)]
