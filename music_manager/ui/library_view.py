@@ -742,6 +742,8 @@ class LibraryView(QWidget):
     # ===== copacul din stânga =====
     def rebuild_tree(self):
         sel = self.view
+        if self.items:
+            self._annotate(self.items)      # coloana „Playlisturi” rămâne la zi după orice schimbare
         self.tree.clear()
 
         def add(parent, text, data, bold=False):
