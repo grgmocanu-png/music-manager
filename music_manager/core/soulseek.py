@@ -25,6 +25,7 @@ from .matching import search_query
 from .spotify import SpotifyTrack
 
 QUALITY = {
+    "mp3_320_lossless": "MP3 320; dacă nu există, FLAC / AIFF / WAV",
     "mp3_320": "MP3 320 (acceptă și ~256 / V0 dacă nu există 320)",
     "mp3_320_strict": "Doar MP3 320",
     "flac_first": "FLAC dacă există, altfel MP3 320",
@@ -139,7 +140,10 @@ def build_command(exe: str, csv_path: str, out_dir: str, config_path: str,
            "--search-timeout", "8000",
            "--max-retries", str(retries), "--concurrent-jobs", str(concurrent),
            "--progress-json", "--no-progress"]
-    if quality == "mp3_320_strict":
+    if quality == "mp3_320_lossless":
+        # MP3-ul trebuie să fie 320; fișierele fără pierderi au oricum bitrate mare
+        cmd += ["--format", "mp3,flac,aiff,aif,wav", "--min-bitrate", "315", "--pref-format", "mp3"]
+    elif quality == "mp3_320_strict":
         cmd += ["--format", "mp3", "--min-bitrate", "315", "--pref-format", "mp3"]
     elif quality == "flac_first":
         cmd += ["--format", "flac,mp3", "--pref-format", "flac", "--min-bitrate", "240"]
@@ -241,6 +245,32 @@ def finalize_file(path: str, track: SpotifyTrack, out_dir: str) -> str:
     except Exception:
         pass
     return dest
+
+
+def _resolve_done_path(path: str, out_dir: str, work_dir: str, started: float, finalized: set) -> str:
+    """Calea raportată de Sockseek poate fi relativă (ex. la descărcarea unui fișier ales manual).
+    Dacă nu o găsim, luăm cel mai nou fișier audio apărut în folderul de download de la pornire."""
+    cands = [path] if path else []
+    if path and not os.path.isabs(path):
+        cands = [os.path.join(out_dir, path), os.path.join(work_dir, path), path]
+    for c in cands:
+        if c and os.path.exists(c):
+            return os.path.abspath(c)
+    newest, best = "", 0.0
+    for root, _dirs, files in os.walk(out_dir):
+        for f in files:
+            if os.path.splitext(f)[1].lower() not in (".mp3", ".flac", ".aiff", ".aif", ".wav", ".m4a", ".ogg"):
+                continue
+            full = os.path.join(root, f)
+            if os.path.normcase(os.path.abspath(full)) in finalized:
+                continue
+            try:
+                mt = os.path.getmtime(full)
+            except OSError:
+                continue
+            if mt >= started - 5 and mt > best:
+                newest, best = full, mt
+    return newest or path
 
 
 def _flatten_into(path: str, out_dir: str) -> str:
@@ -370,6 +400,106 @@ STOP_AFTER_CURRENT = "after_current"
 STOP_NOW = "now"
 
 
+def run_download_staged(items: list[DownloadItem], out_dir: str, username: str, password: str,
+                        quality: str = "mp3_320", exe: str | None = None, work_dir: str | None = None,
+                        on_event: Callable[[DownloadEvent], None] | None = None,
+                        cancelled: Callable[[], object] | None = None, length_tol: int = 5,
+                        retries: int = 20, concurrent: int = 5) -> DownloadSummary:
+    """Descărcarea automată în 3 pași, doar pentru piesele negăsite la pasul anterior:
+      1. artist + titlu
+      2. artist + un cuvânt rar din titlu (căutare mai largă)
+      3. doar titlu + versiune (pentru fișierele fără artist în nume), acceptat doar cu durata apropiată
+    """
+    from .matching import split_title, wide_query
+    total = DownloadSummary()
+    remaining = list(range(len(items)))
+    last_fail: dict[int, tuple] = {}
+
+    def title_only(it: DownloadItem):
+        if not it.track.duration:
+            return None
+        core, ver = split_title(it.track.title)
+        q = (core + " " + ver).strip()
+        return DownloadItem(it.track, "", q, it.dest_dir) if len(q) >= 4 else None
+
+    stages = [
+        ("", lambda it: it, False, length_tol),
+        ("artist + cuvânt rar", lambda it: DownloadItem(it.track, *wide_query(it.track), it.dest_dir), True, length_tol),
+        ("doar titlul", title_only, False, min(length_tol, 3)),
+    ]
+    for n, (label, make, wide, tol) in enumerate(stages):
+        if not remaining or total.cancelled:
+            break
+        mapping, sub = [], []
+        for i in remaining:
+            x = make(items[i])
+            if x is not None:
+                mapping.append(i)
+                sub.append(x)
+        if not sub:
+            continue
+        is_last = n == len(stages) - 1
+        later_ok = {i for i in mapping}   # cine mai are un pas după acesta
+        if not is_last:
+            nxt = stages[n + 1:]
+            later_ok = {i for i in mapping if any(m(items[i]) is not None for _l, m, _w, _t in nxt)}
+        if label and on_event:
+            on_event(DownloadEvent("log", text=f"Pasul {n + 1}: caut „{label}” pentru {len(sub)} piese"))
+
+        def relay(ev, mapping=mapping, later_ok=later_ok, label=label, n=n):
+            if 0 <= ev.index < len(mapping):
+                ev.index = mapping[ev.index]
+            if ev.kind == "failed" and ev.index in later_ok and ev.code not in ("Cancelled",):
+                last_fail[ev.index] = (ev.text, ev.code)
+                ev = DownloadEvent("searching", ev.index, f"negăsită; încerc pasul {n + 2}")
+            if ev.kind == "searching" and label and not ev.text:
+                ev.text = f"pasul {n + 1}: {label}"
+            if on_event:
+                on_event(ev)
+
+        s = run_download(sub, out_dir, username, password, quality, exe, work_dir, relay, cancelled,
+                         wide=wide, length_tol=tol, retries=retries, concurrent=concurrent)
+        total.cancelled = total.cancelled or s.cancelled
+        total.exit_code = s.exit_code
+        total.log_tail = (total.log_tail + s.log_tail)[-40:]
+        total.stopped_now += [mapping[i] for i in s.stopped_now if 0 <= i < len(mapping)]
+        done_now = set()
+        for i, pth in s.done:
+            if 0 <= i < len(mapping):
+                total.done.append((mapping[i], pth))
+                done_now.add(mapping[i])
+        failed_now = {}
+        for f in s.failed:
+            if 0 <= f[0] < len(mapping):
+                failed_now[mapping[f[0]]] = f
+        nxt_remaining = []
+        for i in remaining:
+            if i in done_now:
+                continue
+            if i in failed_now and (i not in later_ok or failed_now[i][2] == "Cancelled" or total.cancelled):
+                total.failed.append((i, failed_now[i][1], failed_now[i][2]))
+                continue
+            if i not in mapping:              # n-a intrat în pasul ăsta (ex. fără durată): îl păstrăm
+                nxt_remaining.append(i)
+                continue
+            if i in failed_now:
+                nxt_remaining.append(i)
+            elif i not in done_now and total.cancelled:
+                pass
+        remaining = nxt_remaining
+    # ce a rămas negăsit după toți pașii (sau la oprire)
+    for i in remaining:
+        if any(d[0] == i for d in total.done) or any(f[0] == i for f in total.failed):
+            continue
+        text, code = last_fail.get(i, ("negăsită pe Soulseek", "NoResults"))
+        if total.cancelled:
+            continue
+        total.failed.append((i, text, code))
+        if on_event:
+            on_event(DownloadEvent("failed", i, text, code=code))
+    return total
+
+
 def run_download(items: list[DownloadItem], out_dir: str, username: str, password: str,
                  quality: str = "mp3_320", exe: str | None = None, work_dir: str | None = None,
                  on_event: Callable[[DownloadEvent], None] | None = None,
@@ -419,6 +549,8 @@ def run_download(items: list[DownloadItem], out_dir: str, username: str, passwor
 
     parser = EventParser(items)
     summary = DownloadSummary()
+    started = time.time()
+    finalized: set[str] = set()
     active: set[int] = set()        # piese care se descarcă acum
     waiting_for: set[int] | None = None   # la „oprește după piesele în lucru”
     stop_mode = None
@@ -473,14 +605,18 @@ def run_download(items: list[DownloadItem], out_dir: str, username: str, passwor
                 active.add(ev.index)
             elif ev.kind == "done":
                 active.discard(ev.index)
+                ev.path = _resolve_done_path(ev.path, out_dir, work_dir, started, finalized)
                 try:
+                    if not ev.path or not os.path.exists(ev.path):
+                        raise OSError("nu găsesc fișierul descărcat")
                     ev.path = _flatten_into(ev.path, out_dir)
-                    if 0 <= ev.index < len(items) and os.path.exists(ev.path):
+                    if 0 <= ev.index < len(items):
                         dest = items[ev.index].dest_dir or out_dir
                         os.makedirs(dest, exist_ok=True)
                         ev.path = finalize_file(ev.path, items[ev.index].track, dest)
-                except OSError:
-                    pass
+                    finalized.add(os.path.normcase(os.path.abspath(ev.path)))
+                except OSError as e:
+                    ev.text = (ev.text + " · " if ev.text else "") + f"⚠ nu l-am putut redenumi ({e.strerror or e})"
                 summary.done.append((ev.index, ev.path))
             elif ev.kind == "failed":
                 active.discard(ev.index)

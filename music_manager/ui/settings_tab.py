@@ -47,8 +47,8 @@ def slsk_credentials() -> tuple[str, str]:
 
 
 def slsk_quality() -> str:
-    q = settings().value("slsk/quality", "mp3_320") or "mp3_320"
-    return q if q in slsk.QUALITY else "mp3_320"
+    q = settings().value("slsk/quality2", "mp3_320_lossless") or "mp3_320_lossless"
+    return q if q in slsk.QUALITY else "mp3_320_lossless"
 
 
 SPOTIFY_HELP = f"""
@@ -116,7 +116,7 @@ class SettingsTab(QWidget):
         self.s_user.editingFinished.connect(lambda: settings().setValue("slsk/user", self.s_user.text().strip()))
         self.s_pass.editingFinished.connect(lambda: settings().setValue("slsk/pass", self.s_pass.text()))
         self.quality.currentIndexChanged.connect(
-            lambda: settings().setValue("slsk/quality", self.quality.currentData()))
+            lambda: settings().setValue("slsk/quality2", self.quality.currentData()))
         self.dl_dir = QLineEdit(download_dir())
         self.dl_dir.setReadOnly(True)
         self.dl_dir.setPlaceholderText("ex. D:\\Muzica\\Mix\\_unsorted")

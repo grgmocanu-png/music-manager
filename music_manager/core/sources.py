@@ -24,6 +24,19 @@ class SavedPlaylist:
     source: str = "spotify"                                # spotify | youtube
     first_seen: dict = field(default_factory=dict)         # id -> data primei verificări (pt. YouTube)
     last_rows: list = field(default_factory=list)          # rezultatul ultimei verificări (afișat la click)
+    files: dict = field(default_factory=dict)              # id -> fișierul descărcat / confirmat de tine
+    rejected: dict = field(default_factory=dict)           # id -> fișiere despre care ai zis „nu e piesa mea”
+
+    def link(self, tid: str, path: str) -> None:
+        if tid and path:
+            self.files[tid] = path
+            self.mark_seen([tid])
+            self.not_found.pop(tid, None)
+
+    def reject(self, tid: str, path: str) -> None:
+        lst = self.rejected.setdefault(tid, [])
+        if path and path not in lst:
+            lst.append(path)
 
     def __post_init__(self):
         # compatibilitate cu versiunea în care not_found era id -> text
@@ -82,6 +95,16 @@ def track_from_dict(d: dict):
 
 # stări calculate la verificarea unui playlist
 HAVE, IGNORED, NOTFOUND, DELETED, OLD, MISSING = "have", "ignored", "notfound", "deleted", "old", "missing"
+NEAR = "near"      # am găsit ceva foarte asemănător; confirmi tu
+
+
+def linked_files(store_items) -> dict:
+    """Legăturile piesă Spotify -> fișier, din toate playlisturile (aceeași piesă poate fi în mai multe)."""
+    out = {}
+    for p in store_items:
+        for tid, path in (p.files or {}).items():
+            out.setdefault(tid, path)
+    return out
 
 
 def _parse_dt(text: str):

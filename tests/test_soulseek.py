@@ -165,3 +165,52 @@ def test_parse_search_output():
     assert len(r) == 1 and r[0].username == "bob" and r[0].bitrate == 320 and r[0].free_slot
     assert r[0].name == "Artist - Song.mp3" and r[0].ext == "mp3"
     assert r[0].link == "slsk://bob/@@abc/Music/Artist - Song.mp3"
+
+
+STAGED_FAKE = textwrap.dedent('''\
+    #!{python}
+    import csv, json, os, sys
+    args = sys.argv[1:]
+    out = args[args.index("-o") + 1]
+    rows = list(csv.DictReader(open(args[0], encoding="utf-8")))
+    def ev(t, **d):
+        print(json.dumps({{"type": t, "data": d}}), flush=True)
+    for r in rows:
+        ev("search_start", artist=r["Artist"], title=r["Title"])
+        # pe „Soulseek” există doar fișierul fără artist: îl găsim doar căutând numai titlul
+        if r["Artist"] or "kalbata" not in r["Title"]:
+            ev("track_state", artist=r["Artist"], title=r["Title"], terminalOutcome="Failed",
+               failureReason="NoResults")
+            continue
+        name = "Amsterdam Experience kalbata Edit.mp3"
+        open(os.path.join(out, name), "wb").write(b"fake")
+        # cale relativă, ca la unele versiuni Sockseek
+        ev("track_state", artist=r["Artist"], title=r["Title"], terminalOutcome="Succeeded",
+           downloadPath=name, bitRate=320, extension="mp3")
+''')
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="scriptul fals folosește shebang")
+def test_staged_download_title_only_and_rename(tmp_path):
+    from music_manager.core.soulseek import run_download_staged
+    exe = tmp_path / "sockseek"
+    exe.write_text(STAGED_FAKE.format(python=sys.executable))
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    items = [DownloadItem(SpotifyTrack("1", "Amsterdam Experience - Kalbata Edit", ["Shimshon Miel"], duration=300)),
+             DownloadItem(SpotifyTrack("2", "Nothing Here", ["Nobody"], duration=200))]
+    out = tmp_path / "_unsorted"
+    events = []
+    s = run_download_staged(items, str(out), "user", "secret", exe=str(exe), work_dir=str(tmp_path / "w"),
+                            on_event=events.append)
+    done = dict(s.done)
+    assert list(done) == [0]
+    assert os.path.basename(done[0]) == "Shimshon Miel - Amsterdam Experience (Kalbata Edit).mp3"
+    assert [f[0] for f in s.failed] == [1]
+    # un singur „failed” final pentru piesa negăsită, nu câte unul la fiecare pas
+    assert [e.index for e in events if e.kind == "failed"] == [1]
+
+
+def test_build_command_lossless_fallback():
+    c = build_command("ss", "l.csv", "out", "c.conf", "mp3_320_lossless")
+    assert c[c.index("--format") + 1] == "mp3,flac,aiff,aif,wav"
+    assert c[c.index("--pref-format") + 1] == "mp3" and c[c.index("--min-bitrate") + 1] == "315"

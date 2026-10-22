@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QPushButton, QSlider, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
@@ -170,6 +170,13 @@ class PlayerPanel(QWidget):
         top.addWidget(self.b_play)
         top.addWidget(self.b_next)
         top.addSpacing(8)
+        self.cover = QLabel()
+        self.cover.setFixedSize(46, 46)
+        self.cover.setAlignment(Qt.AlignCenter)
+        self.cover.setStyleSheet("border: 1px solid #ccc; color: #aaa; font-size: 18px;")
+        self.cover.setText("♪")
+        top.addWidget(self.cover)
+        top.addSpacing(6)
         tl = QVBoxLayout()
         tl.setSpacing(0)
         tl.addWidget(self.title)
@@ -218,10 +225,31 @@ class PlayerPanel(QWidget):
         self.info.setText(info)
         self.wave.set_data(analysis, duration)
         self.b_drop.setEnabled(bool(analysis and getattr(analysis, "drops", None)))
+        self._show_cover(path)
         if self.player:
             self.player.setSource(QUrl.fromLocalFile(path))
             if autoplay:
                 self.player.play()
+
+    def _show_cover(self, path: str):
+        """Coperta mică din tagurile fișierului (sau o notă muzicală dacă nu are)."""
+        pix = None
+        try:
+            from ..core import tags as tagmod
+            data = tagmod.read_tags(path, want_cover=True)
+            if data.cover:
+                img = QImage.fromData(data.cover[0])
+                if not img.isNull():
+                    pix = QPixmap.fromImage(img).scaled(44, 44, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        except Exception:  # noqa: BLE001
+            pix = None
+        if pix is not None:
+            self.cover.setPixmap(pix)
+            self.cover.setToolTip("")
+        else:
+            self.cover.setPixmap(QPixmap())
+            self.cover.setText("♪")
+            self.cover.setToolTip("Piesa nu are copertă")
 
     def set_analysis(self, analysis):
         self.wave.set_data(analysis, self.duration or getattr(analysis, "duration", 0))

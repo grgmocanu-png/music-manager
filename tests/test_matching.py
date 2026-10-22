@@ -85,3 +85,19 @@ def test_wide_query():
     assert wide_query(S("Somebody That I Used To Know", "Gotye")) == ("gotye", "somebody")
     assert wide_query(S("Lose Yourself - Kölsch Remix", "Mehro")) == ("mehro", "yourself kolsch")
     assert wide_query(S("I Love You", "X")) == ("x", "i love you")      # doar cuvinte comune
+
+
+def test_find_near_without_artist():
+    from music_manager.core.library import Track
+    from music_manager.core.matching import Matcher
+    from music_manager.core.spotify import SpotifyTrack
+    st = SpotifyTrack("1", "Amsterdam Experience - Kalbata Edit", ["Shimshon Miel"], duration=300)
+    f = Track(path="/m/Amsterdam Experience kalbata Edit.mp3", duration=301)
+    m = Matcher([f])
+    assert m.find(st) is None
+    t, why = m.find_near(st)
+    assert t is f and "n-are artist" in why
+    assert m.find_near(st, rejected=[f.path]) is None
+    ext = Track(path="/m/x.mp3", artist="Shimshon Miel", title="Amsterdam Experience (Extended Mix)", duration=420)
+    t2, why2 = Matcher([ext]).find_near(st)
+    assert t2 is ext and "altă versiune" in why2

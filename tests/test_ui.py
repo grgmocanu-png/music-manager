@@ -105,6 +105,23 @@ def test_main_window_smoke(app, tmp_path):
     assert lv._suggest_playlists([daft], "family")[1] == ""      # există deja „House”
     assert lv._suggest_playlists([daft], "title") == ([], "")
     assert "Set" in daft.playlists
+    # v0.9.1: editare în tabel, sugestii pe orice coloană, Cover
+    from music_manager.ui.library_view import COLS as LCOLS
+    keys = [k for _, k in LCOLS]
+    m = lv.table.model_
+    lv.show_view(("all",))
+    row = m.items.index(daft)
+    assert m.setData(m.index(row, keys.index("family")), "Disco")
+    assert daft.family == "Disco" and lv.db.extra(daft.path).user_family == "Disco"
+    assert m.setData(m.index(row, keys.index("bpm")), "123.5")
+    assert daft.bpm == 123.5 and daft.bpm_src == "Manual"
+    assert not m.setData(m.index(row, keys.index("bpm")), "abc")
+    assert m.setData(m.index(row, keys.index("energy")), "8")
+    assert daft.energy == 8
+    assert m.setData(m.index(row, keys.index("label")), "Roulé")
+    assert daft.track.label == "Roulé"
+    assert lv._suggest_playlists([daft], "label")[1] == "Roulé"
+    assert m.data(m.index(row, keys.index("cover"))) in ("✓", "")
     # v0.9: Curăță categorii, căutare piesă lipsă, coloane în engleză
     from music_manager.ui.library_dialogs import CategoryCleanupDialog, FindInLibraryDialog
     cd = CategoryCleanupDialog(lv.items, "comment", win)
@@ -166,6 +183,10 @@ def test_main_window_smoke(app, tmp_path):
     assert len(dlg._checked()) == 1            # niciodată toate piesele dintr-un grup
     dlg._set_all(False)
     assert dlg._checked() == []
+    dlg.keep_only_mp3()
+    groups = find_duplicates(tracks)
+    has_mp3 = any(t.ext == "mp3" for t in groups[0])
+    assert len(dlg._checked()) == (len(groups[0]) - 1 if has_mp3 else 0)
     rd = RenameDialog(tracks, win)
     assert rd.table.rowCount() == 4
     rd.plan_table._set_all(False)

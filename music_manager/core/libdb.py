@@ -122,6 +122,8 @@ class Extra:
     role: str = ""                # rolul pus de tine
     an_date: str = ""             # când a fost analizată
     an_error: str = ""            # analiza a eșuat (nu se mai reîncearcă singură)
+    user_energy: int = 0          # energie pusă de tine (are prioritate)
+    user_family: str = ""         # familie pusă de tine (are prioritate față de cea din gen)
 
 
 @dataclass
@@ -284,6 +286,8 @@ def build_items(tracks: list[Track], db: LibraryDB, collections: list[Collection
                      in_traktor=bool(traktor and norm_path(t.path) in traktor.tracks), drops=e.an_drops)
         _, c_role, c_energy = parse_comment(t.comment)
         it.energy, it.energy_src = (c_energy, "Comentariu") if c_energy else (e.an_energy, "Analiză" if e.an_energy else "")
+        if e.user_energy:
+            it.energy, it.energy_src = e.user_energy, "Manual"
         it.role = e.role or c_role
         it.analyzed, it.an_error = e.an_date, e.an_error
         pos = (history or {}).get(norm_path(t.path)) or []
@@ -671,6 +675,16 @@ def playlist_profile(items: list[LibItem]) -> tuple[str, float, str]:
     bpms = sorted(it.bpm for it in items if it.bpm)
     return (top(it.family for it in items), (bpms[len(bpms) // 2] if bpms else 0.0),
             top(it.role for it in items))
+
+
+def top_value(items: list, fn) -> str:
+    """Valoarea cea mai frecventă (nevidă) a unei coloane într-un playlist."""
+    c: dict[str, int] = {}
+    for it in items:
+        v = fn(it)
+        if v:
+            c[v] = c.get(v, 0) + 1
+    return max(c.items(), key=lambda kv: kv[1])[0] if c else ""
 
 
 def bpm_bucket(bpm: float, width: int = 10) -> tuple[int, int]:

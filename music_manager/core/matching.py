@@ -103,13 +103,64 @@ def _local_key(t: Track) -> LocalKey:
     return LocalKey(t, core, ver, artist_tokens(artist), _words(_ascii(f"{artist} {stem}")))
 
 
+def _fmt(sec: float) -> str:
+    sec = int(round(sec or 0))
+    return f"{sec // 60}:{sec % 60:02}"
+
+
 class Matcher:
     def __init__(self, tracks: list[Track]):
         self.by_core: dict[str, list[LocalKey]] = {}
+        self.by_full: dict[str, list[LocalKey]] = {}     # miez + versiune lipite („titlu kalbata edit”)
         for t in tracks:
             k = _local_key(t)
             if k.core:
                 self.by_core.setdefault(k.core, []).append(k)
+                self.by_full.setdefault((k.core + " " + k.version).strip(), []).append(k)
+
+    def find_near(self, st: SpotifyTrack, rejected=()) -> tuple[Track, str] | None:
+        """Un fișier care seamănă mult, dar nu destul ca să fie sigur — cu motivul.
+        Ex.: același titlu, dar fișierul n-are artist; altă versiune; durată diferită."""
+        core, ver = split_title(st.title)
+        if not core:
+            return None
+        full = (core + " " + ver).strip()
+        sp_artists = set()
+        for a in st.artists:
+            sp_artists |= artist_tokens(a)
+        seen, cands = set(), []
+        for k in self.by_core.get(core, []) + self.by_full.get(full, []) + self.by_core.get(full, []):
+            if id(k) in seen or k.track.path in rejected:
+                continue
+            seen.add(id(k))
+            cands.append(k)
+        best = None
+        for k in cands:
+            reasons, penalty = [], 0
+            artist_ok = bool(k.artists & sp_artists) or any(a in k.blob for a in sp_artists)
+            if not artist_ok:
+                if k.artists:
+                    reasons.append(f"alt artist: {', '.join(sorted(k.artists))}")
+                    penalty += 3
+                else:
+                    reasons.append("fișierul n-are artist")
+                    penalty += 1
+            kver = k.version
+            if (k.core + " " + kver).strip() == full and k.core != core:
+                kver = ver                       # versiunea era lipită de titlu
+            if not (ver == kver or (ver and kver and (ver in kver or kver in ver))):
+                reasons.append(f"altă versiune: {kver or 'fără versiune'} (pe Spotify: {ver or 'fără versiune'})")
+                penalty += 2
+            if st.duration and k.track.duration and abs(st.duration - k.track.duration) > 6:
+                reasons.append(f"durată diferită: {_fmt(k.track.duration)} (pe Spotify {_fmt(st.duration)})")
+                penalty += 1
+            if not reasons:
+                reasons.append("aproape identică")
+            if best is None or penalty < best[0]:
+                best = (penalty, k.track, "; ".join(reasons))
+        if best is None or best[0] >= 5:
+            return None
+        return best[1], best[2]
 
     def find(self, st: SpotifyTrack, duration_tol: float = 6.0) -> Track | None:
         core, ver = split_title(st.title)

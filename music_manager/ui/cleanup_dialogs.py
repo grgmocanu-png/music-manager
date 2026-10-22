@@ -334,16 +334,18 @@ class DuplicatesDialog(QDialog):
         self.targets = targets or [t for g in groups for t in g]
         self.moved = False
         info = QLabel("Piese care par la fel (același artist și titlu, durată apropiată). Alege ce păstrezi: "
-                      "butoanele de mai jos bifează toate FLAC-urile sau toate MP3-urile. Bifatele se mută în "
+                      "„Păstrez doar MP3” lasă în fiecare grup cel mai bun MP3 și bifează restul. Bifatele se mută în "
                       "„_Dubluri” (se poate anula) sau în Coșul de gunoi (le recuperezi de acolo).")
         info.setWordWrap(True)
         self.include_done = QCheckBox("Include și grupurile verificate deja")
         self.include_done.toggled.connect(self.fill)
-        b_flac = QPushButton("Bifează toate FLAC-urile (păstrez MP3)")
+        b_flac = QPushButton("Păstrez doar MP3")
+        b_flac.setToolTip("În fiecare grup rămâne nebifat cel mai bun MP3; tot restul (FLAC, WAV, AIFF, MP3-uri mai "
+                          "slabe) se bifează. Grupurile fără niciun MP3 nu sunt atinse.")
         b_mp3 = QPushButton("Bifează toate MP3-urile (păstrez FLAC)")
         b_all = QPushButton("Bifează tot în afară de cea mai bună")
         b_none = QPushButton("Debifează tot")
-        b_flac.clicked.connect(lambda: self.check_format("flac"))
+        b_flac.clicked.connect(self.keep_only_mp3)
         b_mp3.clicked.connect(lambda: self.check_format("mp3"))
         b_all.clicked.connect(self.check_all_but_best)
         b_none.clicked.connect(lambda: self._set_all(False))
@@ -405,8 +407,10 @@ class DuplicatesDialog(QDialog):
             parent.setExpanded(True)
         self.tree.blockSignals(False)
         keep = settings().value("dup/keep", "mp3") or "mp3"
-        if keep in ("mp3", "flac"):
-            self.check_format("flac" if keep == "mp3" else "mp3", save=False)
+        if keep == "mp3":
+            self.keep_only_mp3(save=False)
+        elif keep == "flac":
+            self.check_format("mp3", save=False)
         else:
             self.check_all_but_best()
 
@@ -427,6 +431,20 @@ class DuplicatesDialog(QDialog):
         self.tree.blockSignals(False)
         if save:
             settings().setValue("dup/keep", "mp3" if fmt == "flac" else "flac")
+        self._update_summary()
+
+    def keep_only_mp3(self, save: bool = True):
+        """În fiecare grup: păstrez cel mai bun MP3, bifez tot restul. Fără MP3 în grup: nu ating nimic."""
+        self.tree.blockSignals(True)
+        for _p, kids in self._children():
+            mp3 = [k for k in kids if k.data(0, Qt.UserRole).ext == "mp3"]
+            keep = max(mp3, key=lambda k: k.data(0, Qt.UserRole).quality_score()) if mp3 else None
+            for k in kids:
+                on = keep is not None and k is not keep
+                k.setCheckState(0, Qt.Checked if on else Qt.Unchecked)
+        self.tree.blockSignals(False)
+        if save:
+            settings().setValue("dup/keep", "mp3")
         self._update_summary()
 
     def check_all_but_best(self):

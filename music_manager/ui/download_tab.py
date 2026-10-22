@@ -33,9 +33,11 @@ from .settings_tab import (download_dir, playlist_subfolders, slsk_credentials, 
 # stări (primele vin din core.sources.classify)
 HAVE, IGNORED, NOTFOUND, DELETED, OLD, MISSING = (src.HAVE, src.IGNORED, src.NOTFOUND, src.DELETED,
                                                    src.OLD, src.MISSING)
+NEAR = src.NEAR
 QUEUED, SEARCHING, DOWNLOADING, DONE, FAILED = "queued", "searching", "downloading", "done", "failed"
 STATUS_LABEL = {
     HAVE: ("✓ Ai deja", "#27ae60"),
+    NEAR: ("≈ Poate o ai — verifică", "#8e44ad"),
     MISSING: ("Nouă — lipsește", "#e67e22"),
     OLD: ("Lipsește (adăugată înainte de ultimul download)", "#b9770e"),
     DELETED: ("Ștearsă de tine", "gray"),
@@ -47,11 +49,12 @@ STATUS_LABEL = {
     DONE: ("⬇ Descărcată", "#27ae60"),
     FAILED: ("✗ Negăsită", "#c0392b"),
 }
-DOWNLOADABLE = (MISSING, OLD, DELETED, NOTFOUND, FAILED)
+DOWNLOADABLE = (MISSING, OLD, DELETED, NOTFOUND, FAILED, NEAR)
 ACTIVE = (QUEUED, SEARCHING, DOWNLOADING)
 FILTERS = {
     "Noi de descărcat": (MISSING,) + ACTIVE,
-    "Toate cele care lipsesc": (MISSING, OLD, NOTFOUND, FAILED) + ACTIVE,
+    "Toate cele care lipsesc": (MISSING, OLD, NOTFOUND, FAILED, NEAR) + ACTIVE,
+    "Aproape găsite (verifică)": (NEAR,),
     "Toate piesele": None,
     "Ce am deja": (HAVE, DONE),
     "Descărcate acum": (DONE,),
@@ -172,10 +175,14 @@ class DownloadRunner(QObject):
                 if ev.kind in ("done", "failed"):
                     done[0] += 1
                 progress(done[0], len(items), json.dumps(asdict(ev)))
+            retries = int(settings().value("slsk/retries", 20) or 20)
+            conc = int(settings().value("slsk/concurrent", 5) or 5)
+            if not link and not wide:       # descărcarea normală: 3 pași de căutare
+                return slsk.run_download_staged(items, out, user, pw, quality, exe, work, on_event, cancelled,
+                                                length_tol=length_tol, retries=retries, concurrent=conc)
             return slsk.run_download(items, out, user, pw, quality, exe, work, on_event, cancelled,
                                      wide=wide, length_tol=length_tol, link=link,
-                                     retries=int(settings().value("slsk/retries", 20) or 20),
-                                     concurrent=int(settings().value("slsk/concurrent", 5) or 5))
+                                     retries=retries, concurrent=conc)
 
         from .jobs import Job
         self.task = Job(f"Download Soulseek ({len(items)})", work_fn, pausable=False)
@@ -575,6 +582,9 @@ class PlaylistsPanel(TrackTableBase):
                                     "(sau alege folderul de download în Setări), ca să știu ce ai deja.")
             return
 
+        links = src.linked_files(self.store.items)
+        rejected = {k: list(v) for k, v in (saved.rejected or {}).items()}
+
         def work(progress, cancelled):
             if is_yt:
                 progress(0, 0, "Citesc playlistul de pe YouTube…")
@@ -588,7 +598,24 @@ class PlaylistsPanel(TrackTableBase):
                              cancelled)
             matcher = Matcher(local)
             tol = 15.0 if is_yt else 6.0      # pe YouTube clipurile au adesea intro/outro
-            return pl, {t.id: matcher.find(t, duration_tol=tol) for t in pl.tracks}
+            by_path = {os.path.normcase(os.path.abspath(t.path)): t for t in local}
+            found, near = {}, {}
+            for t in pl.tracks:
+                # 1. fișierul legat de piesă (descărcat de aplicație sau confirmat de tine)
+                lp = links.get(t.id)
+                if lp and os.path.exists(lp):
+                    found[t.id] = by_path.get(os.path.normcase(os.path.abspath(lp))) or lib.Track(path=lp)
+                    continue
+                # 2. potrivire sigură după artist / titlu / versiune / durată
+                m = matcher.find(t, duration_tol=tol)
+                if m is not None:
+                    found[t.id] = m
+                    continue
+                # 3. ceva foarte asemănător: îl arătăm separat, cu motivul
+                n = matcher.find_near(t, rejected.get(t.id, ()))
+                if n is not None:
+                    near[t.id] = n
+            return pl, found, near
 
         from .jobs import Job
         self.task = Job(f"Verific playlistul „{saved.name}”", work, writes=False)
@@ -604,7 +631,7 @@ class PlaylistsPanel(TrackTableBase):
         QMessageBox.warning(self, "Eroare", msg)
 
     def _on_checked(self, result):
-        pl, found = result
+        pl, found, near = result
         saved = self.store.get(pl.id) or self.current
         saved.name = pl.name
         self.tab.set_idle()
@@ -642,13 +669,19 @@ class PlaylistsPanel(TrackTableBase):
             aq, tq = saved.custom_queries.get(t.id) or search_query(t)
             status = src.classify(saved, t, bool(local))
             detail = ""
-            if status == NOTFOUND:
+            path = local.path if local else ""
+            if status == HAVE:
+                saved.files[t.id] = path            # legătura rămâne și dacă redenumești fișierul din aplicație
+            elif status in (MISSING, OLD, DELETED, NOTFOUND) and t.id in near:
+                path, detail = near[t.id][0].path, near[t.id][1]
+                status = NEAR
+            elif status == NOTFOUND:
                 detail = saved.not_found[t.id].get("reason", "")
-            rows.append(Row(t, status, local.path if local else "", aq, tq, detail, saved.id))
+            rows.append(Row(t, status, path, aq, tq, detail, saved.id))
         saved.mark_seen(r.track.id for r in rows if r.status == HAVE)
 
         self.rows = rows
-        counts = {k: sum(1 for r in rows if r.status == k) for k in (HAVE, MISSING, OLD, DELETED, NOTFOUND, IGNORED)}
+        counts = {k: sum(1 for r in rows if r.status == k) for k in (HAVE, MISSING, OLD, DELETED, NOTFOUND, IGNORED, NEAR)}
         saved.last_update = datetime.now().isoformat(timespec="minutes")
         saved.last_total = len(rows)
         saved.last_missing = counts[MISSING]
@@ -658,6 +691,8 @@ class PlaylistsPanel(TrackTableBase):
         self.refresh_buttons()
         parts = [f"<b>{len(rows)}</b> piese", f"<b>{counts[HAVE]}</b> le ai",
                  f"<b style='color:#e67e22'>{counts[MISSING]}</b> noi de descărcat"]
+        if counts[NEAR]:
+            parts.append(f"<b style='color:#8e44ad'>{counts[NEAR]}</b> poate le ai (verifică)")
         if counts[OLD]:
             parts.append(f"{counts[OLD]} mai vechi care lipsesc")
         if counts[DELETED]:
@@ -770,6 +805,10 @@ class PlaylistsPanel(TrackTableBase):
             return
         r = self.rows[i]
         m = QMenu(self)
+        if r.status == NEAR and r.path:
+            m.addAction(f"✓ Da, e piesa mea ({os.path.basename(r.path)})", lambda: self._confirm_near(i, True))
+            m.addAction("✗ Nu, nu e piesa mea", lambda: self._confirm_near(i, False))
+            m.addSeparator()
         if r.status in DOWNLOADABLE:
             m.addAction("Caută manual pe Soulseek…",
                         lambda: (setattr(self, "_dl_playlist", self.current),
@@ -782,6 +821,21 @@ class PlaylistsPanel(TrackTableBase):
         if r.path:
             m.addAction(reveal_label(), lambda: reveal_in_folder(r.path))
         m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _confirm_near(self, i, yes: bool):
+        r = self.rows[i]
+        cur = self.store.get(r.playlist_id) or self.current
+        if not cur:
+            return
+        if yes:
+            cur.link(r.track.id, r.path)
+            r.status, r.detail = HAVE, ""
+        else:
+            cur.reject(r.track.id, r.path)
+            r.status, r.path, r.detail = src.classify(cur, r.track, False), "", ""
+        self.save_rows()
+        self.fill_table()
+        self.changed.emit()
 
     def _checked_rows(self) -> list[int]:
         out = []
@@ -879,8 +933,7 @@ class PlaylistsPanel(TrackTableBase):
                 r.detail = "oprită" if summary and summary.cancelled else ""
             if cur:
                 if r.status == DONE:
-                    cur.not_found.pop(r.track.id, None)
-                    cur.mark_seen([r.track.id])
+                    cur.link(r.track.id, r.path)
                 elif r.status == FAILED:
                     code = next((f[2] for f in (summary.failed if summary else [])
                                  if 0 <= f[0] < len(self._dl_idx) and self._dl_idx[f[0]] == i), "")
@@ -1257,8 +1310,7 @@ class NotFoundPanel(TrackTableBase):
             if not p:
                 continue
             if r.status == DONE:
-                p.not_found.pop(r.track.id, None)
-                p.mark_seen([r.track.id])
+                p.link(r.track.id, r.path)
             elif r.track.id in p.not_found:
                 p.not_found[r.track.id].update({"reason": r.detail, "date": now,
                                                 "query": [r.artist_q, r.title_q]})
@@ -1279,6 +1331,7 @@ class DownloadTab(QWidget):
         self.state = state
         self.store = PlaylistStore(os.path.join(data_dir(), "playlisturi.json"))
         self.runner = DownloadRunner(self)
+        state.files_moved.connect(self._files_moved)
 
         self.inner = QTabWidget()
         self.playlists = PlaylistsPanel(self)
@@ -1324,6 +1377,19 @@ class DownloadTab(QWidget):
 
     # folosite de MainWindow
     @property
+
+    def _files_moved(self, moves):
+        """Fișiere redenumite / mutate de aplicație: legăturile piesă → fișier le urmează."""
+        m = {os.path.normcase(os.path.abspath(a)): b for a, b in moves if a}
+        changed = False
+        for p in self.store.items:
+            for tid, path in list((p.files or {}).items()):
+                new = m.get(os.path.normcase(os.path.abspath(path)))
+                if new:
+                    p.files[tid] = new
+                    changed = True
+        if changed:
+            self.store.save()
     def task(self):
         return self.runner.task if self.runner.busy() else self.playlists.task
 

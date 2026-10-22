@@ -14,7 +14,7 @@ from PySide6.QtGui import QAction, QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSpinBox, QSplitter, QTableView,
-    QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QStyledItemDelegate, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..core import analysis as an
@@ -35,8 +35,24 @@ COLS = [("", "play"), ("#", "num"), ("Artist", "artist"), ("Title", "title"), ("
         ("Comments", "style"), ("Role", "role"), ("Energy", "energy"), ("BPM", "bpm"), ("Key", "key"), ("Year", "year"),
         ("Rating", "rating"), ("Duration", "duration"), ("Label", "label"), ("Date Added", "added"),
         ("Quality", "quality"), ("BPM / Key Source", "src"), ("Playlists", "playlists"), ("Folder", "folder"),
-        ("Date Analyzed", "analyzed")]
+        ("Date Analyzed", "analyzed"), ("Cover", "cover")]
+EDITABLE = {"artist", "title", "family", "genre", "style", "role", "energy", "bpm", "key", "year", "label"}
 DEFAULT_HIDDEN = {"src", "folder", "quality"}
+VALUE_COLS = {   # coloanele după care se pot sugera playlisturi (valoarea unei piese)
+    "artist": lambda it: it.track.artist.split(",")[0].strip(),
+    "genre": lambda it: it.track.genre.strip(),
+    "style": lambda it: (ldb.parse_comment(it.track.comment)[0] or it.track.comment).strip(),
+    "energy": lambda it: f"Energy {it.energy}" if it.energy else "",
+    "key": lambda it: it.camelot or it.key,
+    "year": lambda it: it.track.year.strip(),
+    "label": lambda it: it.track.label.strip(),
+    "quality": lambda it: it.track.ext.upper(),
+    "folder": lambda it: os.path.basename(os.path.dirname(it.path)),
+    "cover": lambda it: "Cu copertă" if it.track.has_cover else "Fără copertă",
+    "added": lambda it: (it.date_added or "")[:7],
+    "rating": lambda it: f"{it.rating}★" if it.rating else "",
+    "duration": lambda it: "",
+}
 SORT_ROLE = Qt.UserRole + 1
 MIME = "application/x-musicmanager-paths"
 
@@ -72,6 +88,7 @@ class ItemModel(QAbstractTableModel):
         super().__init__(parent)
         self.items: list[ldb.LibItem] = []
         self.playing = ""
+        self.on_edit = None           # funcție (piesă, coloană, valoare nouă) -> bool
 
     def set_items(self, items):
         self.beginResetModel()
@@ -95,7 +112,26 @@ class ItemModel(QAbstractTableModel):
         return None
 
     def flags(self, index):
-        return Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled
+        f = Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled
+        if index.isValid() and COLS[index.column()][1] in EDITABLE:
+            it = self.items[index.row()]
+            if not (it.missing or it.offline):
+                f |= Qt.ItemIsEditable
+        return f
+
+    def setData(self, index, value, role=Qt.EditRole):
+        if role != Qt.EditRole or not index.isValid() or self.on_edit is None:
+            return False
+        it = self.items[index.row()]
+        col = COLS[index.column()][1]
+        old = self.data(index, Qt.EditRole)
+        value = str(value if value is not None else "").strip()
+        if value == (old or ""):
+            return False
+        ok = self.on_edit(it, col, value)
+        if ok:
+            self.dataChanged.emit(self.index(index.row(), 0), self.index(index.row(), len(COLS) - 1))
+        return bool(ok)
 
     def mimeTypes(self):
         return [MIME]
@@ -131,6 +167,8 @@ class ItemModel(QAbstractTableModel):
                 return t.comment
             if col == "analyzed":
                 return "eroare" if it.an_error else (it.analyzed or "")[:10]
+            if col == "cover":
+                return "✓" if t.has_cover else ""
             if col == "role":
                 return it.role or (f"{it.role_suggested}?" if it.role_suggested else "")
             if col == "energy":
@@ -156,6 +194,11 @@ class ItemModel(QAbstractTableModel):
                 return " / ".join(x for x in (it.bpm_src, it.key_src) if x)
             if col == "folder":
                 return os.path.dirname(it.path)
+        if role == Qt.EditRole:
+            return {"artist": t.artist, "title": t.title, "family": it.family, "genre": t.genre,
+                    "style": t.comment, "role": it.role, "energy": str(it.energy or ""),
+                    "bpm": (f"{it.bpm:.2f}".rstrip("0").rstrip(".") if it.bpm else ""), "key": it.key,
+                    "year": t.year, "label": t.label}.get(col, "")
         if role == SORT_ROLE:
             if col == "num":
                 return index.row()
@@ -166,6 +209,8 @@ class ItemModel(QAbstractTableModel):
                 return int(cam[:-1]) * 2 + (cam[-1] == "B") if cam else 99
             if col == "rating":
                 return it.rating
+            if col == "cover":
+                return 1 if t.has_cover else 0
             if col == "energy":
                 return it.energy
             if col == "role":
@@ -213,6 +258,35 @@ class ItemModel(QAbstractTableModel):
         if role == Qt.TextAlignmentRole and col in ("bpm", "year", "duration", "num", "play", "energy"):
             return int(Qt.AlignCenter)
         return None
+
+
+class EditDelegate(QStyledItemDelegate):
+    """Rol și Familie se aleg dintr-o listă (se poate și scrie); restul se scriu direct."""
+
+    def createEditor(self, parent, option, index):
+        col = COLS[index.column()][1]
+        if col in ("role", "family"):
+            cb = QComboBox(parent)
+            cb.setEditable(col == "family")
+            if col == "role":
+                cb.addItems([""] + list(ldb.ROLES))
+            else:
+                from .dialogs import families
+                cb.addItems([""] + families())
+            return cb
+        return super().createEditor(parent, option, index)
+
+    def setEditorData(self, editor, index):
+        if isinstance(editor, QComboBox):
+            editor.setCurrentText(index.data(Qt.EditRole) or "")
+            return
+        super().setEditorData(editor, index)
+
+    def setModelData(self, editor, model, index):
+        if isinstance(editor, QComboBox):
+            model.setData(index, editor.currentText(), Qt.EditRole)
+            return
+        super().setModelData(editor, model, index)
 
 
 class FilterProxy(QSortFilterProxyModel):
@@ -277,6 +351,9 @@ class TrackTable(QTableView):
         self.proxy = FilterProxy(self)
         self.proxy.setSourceModel(self.model_)
         self.setModel(self.proxy)
+        self.setItemDelegate(EditDelegate(self))
+        # editare: click pe o celulă a rândului deja selectat, sau F2
+        self.setEditTriggers(QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
         self.setSortingEnabled(True)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -290,7 +367,7 @@ class TrackTable(QTableView):
         h.setSectionResizeMode(QHeaderView.Interactive)
         h.setStretchLastSection(True)
         h.setSectionsMovable(True)
-        widths = [28, 38, 170, 230, 95, 100, 160, 70, 55, 55, 85, 48, 60, 55, 110, 82, 120, 160, 120, 200, 95]
+        widths = [28, 38, 170, 230, 95, 100, 160, 70, 55, 55, 85, 48, 60, 55, 110, 82, 120, 160, 120, 200, 95, 50]
         for i, w in enumerate(widths):
             self.setColumnWidth(i, w)
         restored = self._restore_columns()
@@ -598,6 +675,7 @@ class LibraryView(QWidget):
 
         self.table = TrackTable()
         self.table.doubleClicked.connect(lambda ix: self.play(self.table.item_at(ix)))
+        self.table.model_.on_edit = self.edit_cell
         self.table.clicked.connect(self._table_clicked)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
@@ -757,7 +835,8 @@ class LibraryView(QWidget):
             if not fam:
                 style = it.style.split(",")[0].strip()
                 fam = mapper.family_of(style) if style else ""
-            it.family = fam
+            it.family = self.db.extra(it.path).user_family if (not it.missing and not it.offline and
+                                                                 self.db.extra(it.path).user_family) else fam
             it.playlists = member.get(djc.norm_path(it.path), [])
 
     def _reloc(self, path: str) -> str:
@@ -1153,8 +1232,8 @@ class LibraryView(QWidget):
         paths = [i.path for i in sel]
         sugg, create = self._suggest_playlists(sel, col_key)
         if sugg or create:
-            what = {"family": "familia", "genre": "familia", "style": "familia", "bpm": "intervalul de BPM",
-                    "role": "rolul"}.get(col_key, "")
+            what = {"family": "familia", "bpm": "intervalul de BPM", "role": "rolul"}.get(
+                col_key, COLS[[k for _, k in COLS].index(col_key)][0] if col_key in [k for _, k in COLS] else "")
             add.addAction(f"Potrivite după {what}:").setEnabled(False)
             for p in sugg:
                 add.addAction(f"★ {p.name}", lambda pid=p.id: self.add_to_playlist(pid, paths))
@@ -1195,6 +1274,72 @@ class LibraryView(QWidget):
         m.addAction("Caută în MixesDB (browser)", lambda: self.mixesdb(sel[0]))
         m.addAction(reveal_label(), lambda: reveal_in_folder(sel[0].path))
         m.exec(self.table.viewport().mapToGlobal(pos))
+
+    # ===== editare direct în tabel =====
+    TAG_FIELDS = {"artist": "artist", "title": "title", "genre": "genre", "style": "comment",
+                  "year": "year", "label": "label"}
+
+    def edit_cell(self, it, col, value) -> bool:
+        """Ai modificat o celulă. Tagurile se scriu în fișier (în fundal); restul rămâne în aplicație."""
+        e = self.db.extra(it.path)
+        if col in self.TAG_FIELDS:
+            field = self.TAG_FIELDS[col]
+            setattr(it.track, field, value)
+            write_tags_in_background(self, [(it.path, {field: value}, None)], None,
+                                     f"Scriu {COLS[[k for _, k in COLS].index(col)][0]}")
+            if col in ("genre", "style"):
+                self._annotate([it])
+        elif col == "family":
+            e.user_family = value
+            it.family = value
+            if not value:
+                self._annotate([it])
+            self._fill_family_menu()
+        elif col == "role":
+            if value and value not in ldb.ROLES:
+                match = next((r for r in ldb.ROLES if r.lower().startswith(value.lower())), "")
+                if not match:
+                    QMessageBox.information(self, "Role", "Rolul poate fi: " + ", ".join(ldb.ROLES))
+                    return False
+                value = match
+            self.set_role([it], value)
+        elif col == "energy":
+            if value and not (value.isdigit() and 1 <= int(value) <= 10):
+                QMessageBox.information(self, "Energy", "Energia e un număr de la 1 la 10 (sau gol).")
+                return False
+            e.user_energy = int(value) if value else 0
+            self._refresh_item(it)
+            self._write_comments([it], quiet=True)
+        elif col == "bpm":
+            try:
+                v = float(value.replace(",", ".")) if value else 0.0
+            except ValueError:
+                QMessageBox.information(self, "BPM", "Scrie BPM-ul ca număr (ex. 124 sau 123.5), sau gol.")
+                return False
+            if v and not 40 <= v <= 250:
+                QMessageBox.information(self, "BPM", "BPM-ul trebuie să fie între 40 și 250.")
+                return False
+            e.user_bpm = v
+            self._refresh_item(it)
+        elif col == "key":
+            if value and not to_camelot(value):
+                QMessageBox.information(self, "Key", "Nu recunosc tonalitatea. Exemple: 8A, 11B, Am, F#m, Db.")
+                return False
+            e.user_key = value
+            self._refresh_item(it)
+        else:
+            return False
+        self.db.save()
+        self.status.setText(f"Am schimbat {COLS[[k for _, k in COLS].index(col)][0]} la "
+                            f"„{it.track.artist} - {it.track.display_title}”.")
+        return True
+
+    def _refresh_item(self, it):
+        new = ldb.build_items([it.track], self.db, self.collections, source_priority(),
+                              getattr(self, "history", {}))[0]
+        for f in ("bpm", "key", "bpm_src", "key_src", "energy", "energy_src", "role", "role_suggested"):
+            setattr(it, f, getattr(new, f))
+        self.table.model_.refresh_row(it.path)
 
     # ===== rol în set / energie =====
     def _role_key(self, role):
@@ -1290,7 +1435,7 @@ class LibraryView(QWidget):
         base = sel[0] if sel else None
         if not base:
             return [], ""
-        if col_key in ("family", "genre", "style"):
+        if col_key == "family":
             target = base.family
             if not target:
                 return [], ""
@@ -1308,6 +1453,20 @@ class LibraryView(QWidget):
                 return [], ""
             match = lambda fam, bpm, role, name: role == target or name.lower() == target.lower()  # noqa: E731
             create = target
+        elif col_key in VALUE_COLS:
+            fn = VALUE_COLS[col_key]
+            target = fn(base)
+            if not target:
+                return [], ""
+            out = []
+            for p in self.db.playlists:
+                if p.kind != "manual":
+                    continue
+                items = self._resolve(p.tracks) if p.tracks else []
+                if p.name.lower() == target.lower() or (items and ldb.top_value(items, fn) == target):
+                    out.append(p)
+            create = "" if any(p.name.lower() == target.lower() for p in self.db.playlists) else target
+            return out[:10], create
         else:
             return [], ""
         out = []
