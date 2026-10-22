@@ -8,7 +8,8 @@ import textwrap
 import pytest
 
 from music_manager.core.soulseek import (
-    DownloadItem, EventParser, build_command, pretty_title, run_download,
+    STOP_AFTER_CURRENT, STOP_NOW, DownloadItem, EventParser, build_command, pretty_title,
+    run_download,
 )
 from music_manager.core.spotify import SpotifyTrack
 
@@ -56,7 +57,8 @@ def test_run_download_with_fake_sockseek(tmp_path):
     events = []
     summary = run_download(items, str(out), "user", "secret", exe=str(exe),
                            work_dir=str(tmp_path / "work"), on_event=events.append)
-    assert [i for i, _ in summary.failed] == [1]
+    assert [f[0] for f in summary.failed] == [1]
+    assert summary.failed[0][2] == "NoSuitableFileFound"
     done = dict(summary.done)
     assert sorted(done) == [0, 2]
     assert os.path.basename(done[0]) == "deadmau5 - Strobe (Radio Edit).mp3"
@@ -87,3 +89,69 @@ def test_event_parser():
 def test_pretty_title():
     assert pretty_title("Strobe - Radio Edit") == "Strobe (Radio Edit)"
     assert pretty_title("Glue") == "Glue"
+
+
+SLOW = textwrap.dedent('''\
+    #!{python}
+    import csv, json, os, sys, time
+    args = sys.argv[1:]
+    out = args[args.index("-o") + 1]
+    rows = list(csv.DictReader(open(args[0], encoding="utf-8")))
+    def ev(t, **d):
+        print(json.dumps({{"type": t, "data": d}}), flush=True)
+    for r in rows:
+        ev("search_start", artist=r["Artist"], title=r["Title"])
+        ev("download_start", artist=r["Artist"], title=r["Title"], username="u", filename="x.mp3")
+        p = os.path.join(out, r["Title"] + ".mp3")
+        open(p + ".incomplete", "wb").write(b"half")
+        time.sleep(1.0)
+        os.replace(p + ".incomplete", p)
+        ev("track_state", artist=r["Artist"], title=r["Title"], terminalOutcome="Succeeded", downloadPath=p)
+''')
+
+
+def _slow_exe(tmp_path):
+    exe = tmp_path / "sockseek"
+    exe.write_text(SLOW.format(python=sys.executable))
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    return str(exe)
+
+
+def _items(n):
+    return [DownloadItem(SpotifyTrack(str(i), f"T{i}", ["A"], duration=100)) for i in range(n)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="scriptul fals folosește shebang")
+def test_stop_now_removes_partial_file(tmp_path):
+    out = tmp_path / "o"
+    events = []
+    state = {"stop": None}
+
+    def on_event(e):
+        events.append(e)
+        if e.kind == "downloading":
+            state["stop"] = STOP_NOW
+
+    s = run_download(_items(3), str(out), "u", "p", exe=_slow_exe(tmp_path),
+                     work_dir=str(tmp_path / "w"), on_event=on_event, cancelled=lambda: state["stop"])
+    assert s.cancelled and not s.done and s.stopped_now == [0]
+    assert not [f for f in os.listdir(out) if f.endswith(".incomplete")]
+    assert not [f for f in os.listdir(out) if f.endswith(".mp3")]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="scriptul fals folosește shebang")
+def test_stop_after_current_finishes_file(tmp_path):
+    out = tmp_path / "o"
+    state = {"stop": None}
+
+    def on_event(e):
+        if e.kind == "downloading" and e.index == 0:
+            state["stop"] = STOP_AFTER_CURRENT
+
+    s = run_download(_items(3), str(out), "u", "p", exe=_slow_exe(tmp_path),
+                     work_dir=str(tmp_path / "w"), on_event=on_event, cancelled=lambda: state["stop"])
+    assert s.cancelled
+    assert [i for i, _ in s.done] == [0]
+    files = os.listdir(out)
+    assert len([f for f in files if f.endswith(".mp3")]) == 1
+    assert not [f for f in files if f.endswith(".incomplete")]

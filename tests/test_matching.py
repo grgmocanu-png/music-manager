@@ -61,3 +61,20 @@ def test_track_from_json_new_and_old_shape():
     assert track_from_json({"item": {**t, "is_local": True}}) is None
     assert track_from_json({"item": {"type": "episode", "id": "e", "name": "Pod"}}) is None
     assert track_from_json({"item": None}) is None
+
+
+def test_classify_rules():
+    from music_manager.core.sources import SavedPlaylist, classify
+    p = SavedPlaylist(id="p", name="P", url="", baseline="2026-06-01T12:00",
+                      seen=["deleted"], ignored=["ign"], not_found={"nf": "x"})
+    def t(i, added):
+        return SpotifyTrack(id=i, title="T", artists=["A"], added_at=added)
+    assert classify(p, t("x", "2026-07-01T10:00:00Z"), True) == "have"
+    assert classify(p, t("ign", "2026-07-01T10:00:00Z"), False) == "ignored"
+    assert classify(p, t("nf", "2026-07-01T10:00:00Z"), False) == "notfound"
+    assert p.not_found["nf"]["reason"] == "x"          # format vechi convertit
+    assert classify(p, t("deleted", "2026-07-01T10:00:00Z"), False) == "deleted"
+    assert classify(p, t("old", "2025-01-01T10:00:00Z"), False) == "old"
+    assert classify(p, t("new", "2026-09-01T10:00:00Z"), False) == "missing"
+    p.baseline = ""
+    assert classify(p, t("old", "2025-01-01T10:00:00Z"), False) == "missing"

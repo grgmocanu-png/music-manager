@@ -13,6 +13,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import queue as queue_mod
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -63,6 +66,7 @@ class DownloadEvent:
     text: str = ""
     percent: float = 0.0
     path: str = ""
+    code: str = ""            # codul motivului de eșec (ex. NoSuitableFileFound)
 
 
 @dataclass
@@ -70,12 +74,13 @@ class DownloadSummary:
     done: list = field(default_factory=list)       # (index, cale finală)
     failed: list = field(default_factory=list)     # (index, motiv)
     cancelled: bool = False
+    stopped_now: list = field(default_factory=list)   # indecși opriți în timpul descărcării
     exit_code: int = 0
     log_tail: list = field(default_factory=list)
 
 
 FAILURE_TEXT = {
-    "NoSuitableFileFound": "negăsită (niciun fișier potrivit)",
+    "NoSuitableFileFound": "există, dar nu în calitatea sau durata cerută",
     "NoResults": "negăsită pe Soulseek",
     "InvalidSearchString": "căutare invalidă",
     "AllDownloadsFailed": "toate încercările de descărcare au eșuat",
@@ -104,7 +109,10 @@ def write_csv(path: str, items: list[DownloadItem]) -> None:
 
 
 def build_command(exe: str, csv_path: str, out_dir: str, config_path: str,
-                  quality: str = "mp3_320", length_tol: int = 5) -> list[str]:
+                  quality: str = "mp3_320", length_tol: int = 5, wide: bool = False) -> list[str]:
+    """wide=True: căutare mai largă pentru piesele negăsite (mai lentă, mai tolerantă)."""
+    if wide:
+        length_tol = max(length_tol, 15)
     cmd = [exe, csv_path, "--input-type", "csv", "-c", config_path,
            "-o", out_dir,
            "--name-format", "{sartist( - )stitle|filename}",  # redenumim noi apoi, din Spotify
@@ -118,6 +126,8 @@ def build_command(exe: str, csv_path: str, out_dir: str, config_path: str,
     else:
         cmd += ["--format", "mp3", "--min-bitrate", "240", "--pref-format", "mp3",
                 "--pref-min-bitrate", "315"]
+    if wide:
+        cmd += ["--desperate", "--remove-ft", "--remove-brackets"]
     return cmd
 
 
@@ -169,7 +179,7 @@ class EventParser:
                 # dacă (Skipped/AlreadyExists) avem totuși calea, tratăm ca reușit
                 if data.get("downloadPath") and reason == "AlreadyExists":
                     return DownloadEvent("done", idx, "exista deja", path=data["downloadPath"])
-                return DownloadEvent("failed", idx, FAILURE_TEXT.get(reason, str(reason)))
+                return DownloadEvent("failed", idx, FAILURE_TEXT.get(reason, str(reason)), code=str(reason))
         if typ == "extraction_failed":
             return DownloadEvent("log", text="Eroare la citirea listei: " + str(data.get("reason")))
         return None
@@ -227,10 +237,42 @@ def _flatten_into(path: str, out_dir: str) -> str:
     return dest
 
 
+def cleanup_incomplete(out_dir: str) -> int:
+    """Șterge fișierele descărcate pe jumătate (Sockseek le pune extensia .incomplete)."""
+    n = 0
+    for root, dirs, files in os.walk(out_dir, topdown=False):
+        for f in files:
+            if f.lower().endswith(".incomplete"):
+                try:
+                    os.remove(os.path.join(root, f))
+                    n += 1
+                except OSError:
+                    pass
+        if os.path.normcase(os.path.abspath(root)) != os.path.normcase(os.path.abspath(out_dir)):
+            try:
+                if not os.listdir(root):
+                    os.rmdir(root)
+            except OSError:
+                pass
+    return n
+
+
+STOP_AFTER_CURRENT = "after_current"
+STOP_NOW = "now"
+
+
 def run_download(items: list[DownloadItem], out_dir: str, username: str, password: str,
                  quality: str = "mp3_320", exe: str | None = None, work_dir: str | None = None,
                  on_event: Callable[[DownloadEvent], None] | None = None,
-                 cancelled: Callable[[], bool] | None = None) -> DownloadSummary:
+                 cancelled: Callable[[], object] | None = None, wide: bool = False) -> DownloadSummary:
+    """Rulează Sockseek și raportează evenimentele.
+
+    cancelled() poate întoarce:
+      False/None          — continuă
+      STOP_AFTER_CURRENT  — termină piesele care se descarcă deja, apoi oprește
+      STOP_NOW / True     — oprește imediat (fișierele începute se șterg)
+    În ambele cazuri nu rămân fișiere pe jumătate în folder.
+    """
     exe = exe or sockseek_path()
     if not exe:
         raise FileNotFoundError("Nu găsesc Sockseek (programul care descarcă de pe Soulseek).")
@@ -244,28 +286,78 @@ def run_download(items: list[DownloadItem], out_dir: str, username: str, passwor
     write_csv(csv_path, items)
     write_config(conf_path, username, password)
 
-    cmd = build_command(exe, csv_path, out_dir, conf_path, quality)
+    cmd = build_command(exe, csv_path, out_dir, conf_path, quality, wide=wide)
     kwargs = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL, cwd=work_dir, **kwargs)
+
+    lines: queue_mod.Queue = queue_mod.Queue()
+
+    def reader():
+        for raw in proc.stdout:
+            lines.put(raw)
+        lines.put(None)
+
+    threading.Thread(target=reader, daemon=True).start()
+
     parser = EventParser(items)
     summary = DownloadSummary()
-    finished: set[int] = set()
+    active: set[int] = set()        # piese care se descarcă acum
+    waiting_for: set[int] | None = None   # la „oprește după piesele în lucru”
+    stop_mode = None
+
+    def kill():
+        try:
+            proc.terminate()
+            proc.wait(timeout=10)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     try:
-        for raw in proc.stdout:
-            if cancelled and cancelled():
-                summary.cancelled = True
-                proc.terminate()
+        while True:
+            # cererea de oprire
+            if cancelled and stop_mode is None:
+                req = cancelled()
+                if req:
+                    stop_mode = STOP_AFTER_CURRENT if req == STOP_AFTER_CURRENT else STOP_NOW
+                    summary.cancelled = True
+                    if stop_mode == STOP_NOW:
+                        summary.stopped_now = sorted(active)
+                        kill()
+                        break
+                    waiting_for = set(active)
+            elif cancelled and stop_mode == STOP_AFTER_CURRENT and cancelled() == STOP_NOW:
+                stop_mode = STOP_NOW
+                summary.stopped_now = sorted(active)
+                kill()
                 break
-            line = raw.decode("utf-8", "ignore")
-            ev = parser.parse(line)
+            if stop_mode == STOP_AFTER_CURRENT and waiting_for is not None and not (waiting_for & active):
+                summary.stopped_now = sorted(active)   # descărcări pornite după cerere
+                kill()
+                break
+
+            try:
+                raw = lines.get(timeout=0.5)
+            except queue_mod.Empty:
+                continue
+            if raw is None:
+                break
+            ev = parser.parse(raw.decode("utf-8", "ignore"))
             if ev is None:
                 continue
             if ev.kind == "log":
                 summary.log_tail = (summary.log_tail + [ev.text])[-40:]
-            if ev.kind == "done":
+            elif ev.kind == "downloading":
+                if stop_mode == STOP_AFTER_CURRENT:
+                    continue   # nu mai raportăm piese noi; vor fi oprite
+                active.add(ev.index)
+            elif ev.kind == "done":
+                active.discard(ev.index)
                 try:
                     ev.path = _flatten_into(ev.path, out_dir)
                     if 0 <= ev.index < len(items) and os.path.exists(ev.path):
@@ -273,22 +365,27 @@ def run_download(items: list[DownloadItem], out_dir: str, username: str, passwor
                 except OSError:
                     pass
                 summary.done.append((ev.index, ev.path))
-                finished.add(ev.index)
             elif ev.kind == "failed":
-                summary.failed.append((ev.index, ev.text))
-                finished.add(ev.index)
+                active.discard(ev.index)
+                summary.failed.append((ev.index, ev.text, ev.code))
             if on_event:
                 on_event(ev)
-        proc.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                kill()
     finally:
+        if proc.poll() is None:
+            kill()
         try:
             os.remove(conf_path)    # nu lăsăm parola pe disc
         except OSError:
             pass
+        time.sleep(0.3)   # Windows eliberează fișierele cu o mică întârziere
+        cleanup_incomplete(out_dir)
     summary.exit_code = proc.returncode or 0
-    if summary.exit_code and not summary.cancelled and not summary.done and not summary.failed:
+    if (summary.exit_code and not summary.cancelled and not summary.done and not summary.failed):
         tail = "\n".join(summary.log_tail[-8:])
         if "login" in tail.lower() or "password" in tail.lower():
             raise RuntimeError("Soulseek a refuzat autentificarea. Verifică utilizatorul și parola.\n\n" + tail)

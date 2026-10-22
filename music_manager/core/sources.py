@@ -18,7 +18,22 @@ class SavedPlaylist:
     last_downloaded: int = 0
     ignored: list = field(default_factory=list)            # ID-uri Spotify ignorate definitiv
     custom_queries: dict = field(default_factory=dict)     # id -> [artist, titlu]
-    not_found: dict = field(default_factory=dict)          # id -> motiv (de la ultima încercare)
+    not_found: dict = field(default_factory=dict)          # id -> {reason, code, date, track}
+    seen: list = field(default_factory=list)               # piese văzute vreodată la tine (sau descărcate)
+    baseline: str = ""     # piesele adăugate în Spotify înainte de data asta nu se mai bifează automat
+
+    def __post_init__(self):
+        # compatibilitate cu versiunea în care not_found era id -> text
+        for k, v in list(self.not_found.items()):
+            if isinstance(v, str):
+                self.not_found[k] = {"reason": v, "code": "", "date": "", "track": None}
+
+    def mark_seen(self, ids) -> None:
+        s = set(self.seen)
+        for i in ids:
+            if i not in s:
+                self.seen.append(i)
+                s.add(i)
 
     @property
     def last_update_label(self) -> str:
@@ -30,6 +45,59 @@ class SavedPlaylist:
             return self.last_update
         luni = ["ian", "feb", "mar", "apr", "mai", "iun", "iul", "aug", "sep", "oct", "nov", "dec"]
         return f"Ultimul update: {dt.day} {luni[dt.month - 1]} {dt.year}, {dt:%H:%M}"
+
+
+def track_to_dict(t) -> dict:
+    return {"id": t.id, "title": t.title, "artists": list(t.artists), "album": t.album,
+            "duration": t.duration, "year": t.year, "isrc": t.isrc, "added_at": t.added_at}
+
+
+def track_from_dict(d: dict):
+    from .spotify import SpotifyTrack
+    return SpotifyTrack(id=d.get("id", ""), title=d.get("title", ""), artists=list(d.get("artists") or []),
+                        album=d.get("album", ""), duration=float(d.get("duration") or 0),
+                        year=d.get("year", ""), isrc=d.get("isrc", ""), added_at=d.get("added_at", ""))
+
+
+# stări calculate la verificarea unui playlist
+HAVE, IGNORED, NOTFOUND, DELETED, OLD, MISSING = "have", "ignored", "notfound", "deleted", "old", "missing"
+
+
+def _parse_dt(text: str):
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)   # ora locală
+    return dt
+
+
+def classify(saved: SavedPlaylist, track, have_locally: bool) -> str:
+    """Decide ce înseamnă o piesă din playlist pentru tine.
+
+    - o ai               -> HAVE
+    - ai ignorat-o       -> IGNORED
+    - n-a fost găsită pe Soulseek data trecută -> NOTFOUND
+    - a fost la tine, dar acum lipsește -> DELETED (ai șters-o tu, nu o mai descărcăm singuri)
+    - adăugată în Spotify înainte de ultima descărcare -> OLD (nebifată automat)
+    - altfel             -> MISSING (nouă, bifată automat)
+    """
+    if have_locally:
+        return HAVE
+    if track.id in saved.ignored:
+        return IGNORED
+    if track.id in saved.not_found:
+        return NOTFOUND
+    if track.id in saved.seen:
+        return DELETED
+    base = _parse_dt(saved.baseline)
+    added = _parse_dt(track.added_at)
+    if base and added and added < base:
+        return OLD
+    return MISSING
 
 
 class PlaylistStore:

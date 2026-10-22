@@ -79,8 +79,9 @@ class Task(QThread):
         self._fn = fn
         self._cancel = False
 
-    def cancel(self):
-        self._cancel = True
+    def cancel(self, mode=True):
+        """mode poate fi True sau un mod de oprire (ex. „după piesa curentă”)."""
+        self._cancel = mode
 
     def run(self):
         try:

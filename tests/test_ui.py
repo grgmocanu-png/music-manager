@@ -80,21 +80,41 @@ def test_main_window_smoke(app, tmp_path):
     assert rd.table.rowCount() == 4
 
     # download: rânduri simulate
+    from music_manager.core.sources import SavedPlaylist
     dt = win.download
+    pp = dt.playlists
     st = [SpotifyTrack(str(i), t.title, [t.artist], duration=t.duration) for i, t in enumerate(tracks)]
-    dt.current = dt.store.add(__import__("music_manager.core.sources", fromlist=["SavedPlaylist"])
-                              .SavedPlaylist(id="p1", name="Test", url=""))
-    dt.rows = [Row(st[0], HAVE, tracks[0].path), Row(st[1], MISSING, "", "bicep", "glue"),
-               Row(st[2], MISSING, "", "daft punk", "one more time")]
-    dt.fill_table(check_missing=True)
-    assert dt._checked_rows() == [1, 2]
-    assert "(2)" in dt.b_download.text()
-    dt.table.selectRow(1)
-    dt._ignore_selected(True)
-    assert dt.rows[1].status == "ignored" and "1" in dt.current.ignored
-    dt.table.item(2, 5).setText("Daft Punk")   # căutare editată
-    assert dt.current.custom_queries["2"][0] == "Daft Punk"
-    dt.refresh_buttons()
+    pp.current = dt.store.add(SavedPlaylist(id="p1", name="Test", url=""))
+    pp.rows = [Row(st[0], HAVE, tracks[0].path), Row(st[1], MISSING, "", "bicep", "glue"),
+               Row(st[2], MISSING, "", "daft punk", "one more time"), Row(st[3], "deleted", "", "m", "a")]
+    pp.fill_table(auto_check=True)
+    assert pp._checked_rows() == [1, 2]                 # cea ștearsă nu se bifează
+    assert "(2)" in pp.b_download.text()
+    pp.table.selectRow(1)
+    pp._ignore_selected(True)
+    assert pp.rows[1].status == "ignored" and "1" in pp.current.ignored
+    pp.table.item(2, 5).setText("Daft Punk")            # căutare editată
+    assert pp.current.custom_queries["2"][0] == "Daft Punk"
+    pp.refresh_buttons()
     assert MISSING in DOWNLOADABLE
+
+    # negăsite
+    from music_manager.core.sources import track_to_dict
+    pp.current.not_found["2"] = {"reason": "negăsită pe Soulseek", "code": "NoResults", "date": "2026-10-22T17:00",
+                                 "track": track_to_dict(st[2])}
+    pp.current.not_found["9"] = "format vechi"
+    dt.store.save()
+    dt.notfound.reload()
+    assert len(dt.notfound.rows) == 1 or len(dt.notfound.rows) == 2
+    assert "Negăsite" in dt.inner.tabText(1)
+    dt.notfound.table.selectRow(0)
+    dt.notfound._remove_selected(ignore=False)
+    assert "2" not in pp.current.not_found and "2" in pp.current.seen
+
+    # oprire: butoanele apar doar în timpul descărcării
+    dt.set_busy("x", stoppable=True)
+    assert dt.b_stop_soft.isVisibleTo(dt) and dt.b_stop_hard.isVisibleTo(dt)
+    dt.set_idle()
+    assert not dt.b_stop_soft.isVisibleTo(dt)
 
     win.close()
