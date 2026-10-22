@@ -30,6 +30,7 @@ class LibraryTab(QWidget):
         self.folder_list.setMaximumHeight(80)
         self.folder_list.addItems(state.folders)
         b_add = QPushButton("Adaugă folder…")
+        b_add.setToolTip("Folderele cu muzica ta de mix. Se scanează cu tot cu subfoldere.")
         b_del = QPushButton("Scoate folderul")
         self.b_scan = QPushButton("Scanează")
         self.b_scan.setDefault(True)
@@ -43,7 +44,7 @@ class LibraryTab(QWidget):
         fbtn.addStretch()
         top = QHBoxLayout()
         flay = QVBoxLayout()
-        flay.addWidget(QLabel("<b>Folderele cu muzică</b>"))
+        flay.addWidget(QLabel("<b>Folderele cu muzica ta</b> (se scanează cu tot cu subfolderele)"))
         flay.addWidget(self.folder_list)
         top.addLayout(flay, 1)
         top.addLayout(fbtn)
@@ -60,24 +61,17 @@ class LibraryTab(QWidget):
         self.search.textChanged.connect(self._on_search)
 
         # --- acțiuni ---
-        b_dup = QPushButton("Găsește dubluri…")
-        b_ren = QPushButton("Redenumește / organizează…")
         b_conv = QPushButton("Trimite la Conversie")
         b_pl = QPushButton("Adaugă în playlist")
         b_show = QPushButton("Arată în folder")
-        self.b_undo = QPushButton("Anulează ultima operație")
-        b_dup.clicked.connect(self.find_duplicates)
-        b_ren.clicked.connect(self.rename)
         b_conv.clicked.connect(lambda: self._send(self.state.send_to_convert, paths=True))
         b_pl.clicked.connect(lambda: self._send(self.state.send_to_playlist, paths=False))
         b_show.clicked.connect(self.show_in_folder)
-        self.b_undo.clicked.connect(self.undo)
 
         actions = QHBoxLayout()
-        for b in (b_dup, b_ren, b_conv, b_pl, b_show):
+        for b in (b_conv, b_pl, b_show):
             actions.addWidget(b)
         actions.addStretch()
-        actions.addWidget(self.b_undo)
 
         hint = QLabel("Sfat: selectezi mai multe piese cu Shift sau Ctrl/Cmd. "
                       "Dacă nu selectezi nimic, acțiunile se aplică tuturor pieselor afișate. "
@@ -94,7 +88,6 @@ class LibraryTab(QWidget):
         lay.addLayout(actions)
         lay.addWidget(hint)
 
-        self._refresh_undo()
         if state.folders:
             self.scan()
 
@@ -199,59 +192,6 @@ class LibraryTab(QWidget):
         sel = self.table.selected_tracks()
         if sel:
             reveal_in_folder(sel[0].path)
-
-    def _refresh_undo(self):
-        last = lib.last_undo(undo_dir())
-        if last:
-            kind = last[1].get("kind", "")
-            n = len(last[1].get("moves", []))
-            self.b_undo.setText(f"Anulează ultima operație ({kind}, {n} fișiere)")
-            self.b_undo.setEnabled(True)
-        else:
-            self.b_undo.setText("Anulează ultima operație")
-            self.b_undo.setEnabled(False)
-
-    def undo(self):
-        last = lib.last_undo(undo_dir())
-        if not last:
-            return
-        n = len(last[1].get("moves", []))
-        if QMessageBox.question(self, "Anulare",
-                                f"Pun la loc cele {n} fișiere mutate la ultima operație "
-                                f"({last[1].get('kind')})?") != QMessageBox.Yes:
-            return
-        ok, fail, _ = lib.undo_last(undo_dir())
-        msg = f"Am pus la loc {ok} fișiere."
-        if fail:
-            msg += f"\n{fail} nu au putut fi puse la loc (au fost mutate sau șterse între timp)."
-        QMessageBox.information(self, "Anulare", msg)
-        self._refresh_undo()
-        self.scan()
-
-    # --- dubluri ---
-    def find_duplicates(self):
-        tracks = self.state.tracks
-        if not tracks:
-            QMessageBox.information(self, "Dubluri", "Scanează mai întâi biblioteca.")
-            return
-        groups = lib.find_duplicates(tracks)
-        if not groups:
-            QMessageBox.information(self, "Dubluri", "Nu am găsit dubluri. 🎉")
-            return
-        dlg = DuplicatesDialog(groups, self)
-        if dlg.exec() == QDialog.Accepted and dlg.moved:
-            self._refresh_undo()
-            self.scan()
-
-    # --- redenumire ---
-    def rename(self):
-        tracks = self._target_tracks()
-        if not tracks:
-            return
-        dlg = RenameDialog(tracks, self)
-        if dlg.exec() == QDialog.Accepted and dlg.applied:
-            self._refresh_undo()
-            self.scan()
 
 
 def report(parent, message: str, errors: list[str]):

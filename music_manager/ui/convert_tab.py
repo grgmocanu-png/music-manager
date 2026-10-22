@@ -166,10 +166,9 @@ class ConvertTab(QWidget):
     # --- listă de fișiere ---
     def receive(self, paths: list[str]):
         self.add_paths(paths, apply_filter=False)
-        win = self.window()
-        tabs = getattr(win, "tabs", None)
-        if tabs:
-            tabs.setCurrentWidget(self)
+        show = getattr(self.window(), "show_tab", None)
+        if show:
+            show(self)
 
     def add_paths(self, paths: list[str], apply_filter: bool = True):
         allowed = SOURCE_FILTERS[self.source_filter.currentText()]

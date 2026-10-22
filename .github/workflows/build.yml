@@ -1,0 +1,114 @@
+name: Teste și build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Teste (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Biblioteci de sistem pentru Qt (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - run: pip install -r requirements-dev.txt
+      - name: Teste
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+      - name: Pornire aplicație (test de fum)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          MM_SMOKE_TEST: "1"
+        run: python run.py
+
+  windows:
+    name: Build Windows
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+
+      - name: Descarcă Sockseek (pentru Soulseek)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo fiso64/sockseek --pattern "*win-x64.zip" -D ss_dl
+          Expand-Archive -Path (Get-ChildItem ss_dl\*.zip | Select-Object -First 1).FullName -DestinationPath ss_tmp
+          $exe = Get-ChildItem ss_tmp -Recurse -Filter sockseek.exe | Select-Object -First 1
+          if (-not $exe) { throw "sockseek.exe nu a fost găsit în arhivă" }
+          New-Item -ItemType Directory -Force sockseek | Out-Null
+          Copy-Item -Recurse "$($exe.Directory.FullName)\*" sockseek\
+          & .\sockseek\sockseek.exe --version
+          if ($LASTEXITCODE -ne 0) { & .\sockseek\sockseek.exe --help | Select-Object -First 5 }
+
+      - name: Versiune
+        id: ver
+        shell: bash
+        run: |
+          V=$(python -c "import music_manager as m; print(m.__version__)")
+          echo "version=$V" >> $GITHUB_OUTPUT
+          echo "APP_VERSION=$V" >> $GITHUB_ENV
+
+      - name: PyInstaller
+        run: pyinstaller --noconfirm --clean packaging/MusicManager.spec
+
+      - name: Verifică executabilul
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          MM_SMOKE_TEST: "1"
+        run: |
+          $p = Start-Process dist\MusicManager\MusicManager.exe -PassThru
+          if (-not $p.WaitForExit(60000)) { $p.Kill(); throw "aplicația nu s-a închis singură" }
+          if ($p.ExitCode -ne 0) { throw "aplicația a ieșit cu codul $($p.ExitCode)" }
+          if (-not (Test-Path dist\MusicManager\_internal\sockseek\sockseek.exe)) { throw "lipsește sockseek" }
+
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup a eșuat" }
+          Compress-Archive -Path dist\MusicManager -DestinationPath dist\MusicManager-portabil.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MusicManager-Windows
+          path: |
+            dist/MusicManager-Setup.exe
+            dist/MusicManager-portabil.zip
+
+      - name: Publică pe pagina Releases
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest dist/MusicManager-Setup.exe dist/MusicManager-portabil.zip \
+            --title "Music Manager ${{ steps.ver.outputs.version }} (build ${{ github.run_number }})" \
+            --notes "Descarcă **MusicManager-Setup.exe** și rulează-l. Varianta portabilă: dezarhivează zip-ul și pornește MusicManager.exe." \
+            --latest

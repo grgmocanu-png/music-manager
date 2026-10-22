@@ -15,6 +15,12 @@ def main() -> int:
     QCoreApplication.setOrganizationName("MusicManager")
     QCoreApplication.setApplicationName(APP_NAME)
     app = QApplication(sys.argv)
+    from PySide6.QtGui import QIcon
+    for base in (getattr(sys, "_MEIPASS", ""), os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "packaging")):
+        icon = os.path.join(base, "icon.png")
+        if base and os.path.exists(icon):
+            app.setWindowIcon(QIcon(icon))
+            break
 
     log_dir = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
     os.makedirs(log_dir, exist_ok=True)

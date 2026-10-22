@@ -253,9 +253,9 @@ class PlaylistTab(QWidget):
     # --- playlist ---
     def receive(self, tracks: list[Track]):
         self.add_tracks(tracks)
-        tabs = getattr(self.window(), "tabs", None)
-        if tabs:
-            tabs.setCurrentWidget(self)
+        show = getattr(self.window(), "show_tab", None)
+        if show:
+            show(self)
 
     def playlist_tracks(self) -> list[Track]:
         return [self.list.item(i).data(TRACK_ROLE) for i in range(self.list.count())]
