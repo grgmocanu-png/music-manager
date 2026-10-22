@@ -1375,9 +1375,6 @@ class DownloadTab(QWidget):
         self.runner.error.connect(self._dl_error)
         self.update_notfound_title(len(self.notfound.rows))
 
-    # folosite de MainWindow
-    @property
-
     def _files_moved(self, moves):
         """Fișiere redenumite / mutate de aplicație: legăturile piesă → fișier le urmează."""
         m = {os.path.normcase(os.path.abspath(a)): b for a, b in moves if a}
@@ -1390,6 +1387,9 @@ class DownloadTab(QWidget):
                     changed = True
         if changed:
             self.store.save()
+
+    # folosite de MainWindow
+    @property
     def task(self):
         return self.runner.task if self.runner.busy() else self.playlists.task
 
