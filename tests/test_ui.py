@@ -115,7 +115,13 @@ def test_main_window_smoke(app, tmp_path):
     assert daft.family == "Disco" and lv.db.extra(daft.path).user_family == "Disco"
     assert m.setData(m.index(row, keys.index("bpm")), "123.5")
     assert daft.bpm == 123.5 and daft.bpm_src == "Manual"
-    assert not m.setData(m.index(row, keys.index("bpm")), "abc")
+    from PySide6.QtWidgets import QMessageBox
+    _info = QMessageBox.information
+    QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)   # fără ferestre în test
+    try:
+        assert not m.setData(m.index(row, keys.index("bpm")), "abc")
+    finally:
+        QMessageBox.information = _info
     assert m.setData(m.index(row, keys.index("energy")), "8")
     assert daft.energy == 8
     assert m.setData(m.index(row, keys.index("label")), "Roulé")
