@@ -313,7 +313,7 @@ def search(query: str, username: str, password: str, exe: str | None = None,
     write_config(conf, username, password)
     q = query.replace(",", " ").strip()
     cmd = [exe, q, "--input-type", "string", "-s", "-c", conf, "--print", "json-all",
-           "--format", "mp3,flac,wav,aiff,aif,m4a,ogg,opus", "--length-tol", "-1",
+           "--format", "mp3,flac,wav,aiff,aif,m4a,ogg,opus", "--length-tol=-1",
            "--pref-format", "mp3", "--pref-min-bitrate", "315", "--search-timeout", str(timeout_ms),
            "--no-progress"]
     kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
