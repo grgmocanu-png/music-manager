@@ -78,3 +78,10 @@ def test_classify_rules():
     assert classify(p, t("new", "2026-09-01T10:00:00Z"), False) == "missing"
     p.baseline = ""
     assert classify(p, t("old", "2025-01-01T10:00:00Z"), False) == "missing"
+
+
+def test_wide_query():
+    from music_manager.core.matching import wide_query
+    assert wide_query(S("Somebody That I Used To Know", "Gotye")) == ("gotye", "somebody")
+    assert wide_query(S("Lose Yourself - Kölsch Remix", "Mehro")) == ("mehro", "yourself kolsch")
+    assert wide_query(S("I Love You", "X")) == ("x", "i love you")      # doar cuvinte comune

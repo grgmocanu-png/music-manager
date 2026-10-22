@@ -155,3 +155,13 @@ def test_stop_after_current_finishes_file(tmp_path):
     files = os.listdir(out)
     assert len([f for f in files if f.endswith(".mp3")]) == 1
     assert not [f for f in files if f.endswith(".incomplete")]
+
+
+def test_parse_search_output():
+    from music_manager.core.soulseek import parse_search_output
+    out = 'Logging in...\n[{"User":{"Username":"bob","UploadSpeed":1.5,"HasFreeUploadSlot":true},' \
+          '"File":{"Length":300,"Filename":"@@abc\\\\Music\\\\Artist - Song.mp3","Size":12000000,"Bitrate":320}}]\n'
+    r = parse_search_output(out)
+    assert len(r) == 1 and r[0].username == "bob" and r[0].bitrate == 320 and r[0].free_slot
+    assert r[0].name == "Artist - Song.mp3" and r[0].ext == "mp3"
+    assert r[0].link == "slsk://bob/@@abc/Music/Artist - Song.mp3"

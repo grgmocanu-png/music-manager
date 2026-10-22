@@ -117,4 +117,19 @@ def test_main_window_smoke(app, tmp_path):
     dt.set_idle()
     assert not dt.b_stop_soft.isVisibleTo(dt)
 
+    # căutare manuală pe Soulseek (fără rețea: rezultate simulate)
+    from music_manager.core.soulseek import SearchResult
+    from music_manager.ui.slsk_search import ManualSearchDialog
+    d = ManualSearchDialog("bicep glue", "Bicep - Glue", 269, win)
+    d._done([SearchResult("a", "@@x\\Glue.mp3", 9_000_000, 320, 270, speed=2.0, free_slot=True),
+             SearchResult("b", "@@x\\Glue (live).mp3", 9_000_000, 320, 400),
+             SearchResult("c", "@@x\\Glue.mp3", 3_000_000, 128, 269)])
+    assert d.table.rowCount() == 1            # 128 kbps și durata greșită sunt ascunse
+    d.only_good.setChecked(False)
+    d.only_len.setChecked(False)
+    assert d.table.rowCount() == 3
+    d.table.selectRow(0)
+    d.take()
+    assert d.chosen is not None
+
     win.close()

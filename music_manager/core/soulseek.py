@@ -119,7 +119,9 @@ def build_command(exe: str, csv_path: str, out_dir: str, config_path: str,
            "--name-format", "{sartist( - )stitle|filename}",  # redenumim noi apoi, din Spotify
            "--length-tol", str(length_tol), "--pref-length-tol", "2",
            "--no-skip-existing", "--no-write-index",
-           "--fast-search", "--progress-json", "--no-progress"]
+           # fără --fast-search: așteaptă câteva rezultate și alege după calitate, viteză și slot liber
+           "--search-timeout", "8000",
+           "--progress-json", "--no-progress"]
     if quality == "mp3_320_strict":
         cmd += ["--format", "mp3", "--min-bitrate", "315", "--pref-format", "mp3"]
     elif quality == "flac_first":
@@ -128,7 +130,7 @@ def build_command(exe: str, csv_path: str, out_dir: str, config_path: str,
         cmd += ["--format", "mp3", "--min-bitrate", "240", "--pref-format", "mp3",
                 "--pref-min-bitrate", "315"]
     if wide:
-        cmd += ["--desperate", "--remove-ft", "--remove-brackets"]
+        cmd += ["--remove-ft", "--remove-brackets"]
     return cmd
 
 
@@ -144,6 +146,8 @@ class EventParser:
         self._last_download_index = -1
 
     def _index(self, data: dict) -> int:
+        if len(self.items) == 1:
+            return 0
         key = ((data.get("artist") or "").lower(), (data.get("title") or "").lower())
         lst = self._by_key.get(key)
         return lst[0] if lst else -1
@@ -238,6 +242,91 @@ def _flatten_into(path: str, out_dir: str) -> str:
     return dest
 
 
+@dataclass
+class SearchResult:
+    username: str
+    filename: str          # calea completă pe Soulseek (cu \\)
+    size: int = 0
+    bitrate: int = 0
+    length: int = 0
+    samplerate: int = 0
+    bitdepth: int = 0
+    speed: float = 0.0     # MB/s
+    free_slot: bool = False
+
+    @property
+    def name(self) -> str:
+        return self.filename.replace("\\", "/").rsplit("/", 1)[-1]
+
+    @property
+    def folder(self) -> str:
+        p = self.filename.replace("\\", "/")
+        return p.rsplit("/", 1)[0] if "/" in p else ""
+
+    @property
+    def ext(self) -> str:
+        return os.path.splitext(self.name)[1].lstrip(".").lower()
+
+    @property
+    def link(self) -> str:
+        return f"slsk://{self.username}/{self.filename.replace(chr(92), '/')}"
+
+
+def parse_search_output(text: str) -> list[SearchResult]:
+    """Rezultatele de la „--print json-all” (o listă JSON pe stdout)."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("["):
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for r in data:
+            u, f = r.get("User") or {}, r.get("File") or {}
+            if not f.get("Filename"):
+                continue
+            out.append(SearchResult(
+                username=u.get("Username", ""), filename=f["Filename"], size=int(f.get("Size") or 0),
+                bitrate=int(f.get("Bitrate") or 0), length=int(f.get("Length") or 0),
+                samplerate=int(f.get("SampleRate") or 0), bitdepth=int(f.get("BitDepth") or 0),
+                speed=float(u.get("UploadSpeed") or 0), free_slot=bool(u.get("HasFreeUploadSlot"))))
+    return out
+
+
+def search(query: str, username: str, password: str, exe: str | None = None,
+           work_dir: str | None = None, timeout_ms: int = 10000) -> list[SearchResult]:
+    """Căutare manuală, ca în clientul Soulseek: întoarce toate rezultatele audio, ordonate."""
+    exe = exe or sockseek_path()
+    if not exe:
+        raise FileNotFoundError("Nu găsesc Sockseek.")
+    work_dir = work_dir or tempfile.mkdtemp(prefix="mm_slsk_")
+    os.makedirs(work_dir, exist_ok=True)
+    conf = os.path.join(work_dir, "cautare.conf")
+    write_config(conf, username, password)
+    q = query.replace(",", " ").strip()
+    cmd = [exe, q, "--input-type", "string", "-s", "-c", conf, "--print", "json-all",
+           "--format", "mp3,flac,wav,aiff,aif,m4a,ogg,opus", "--length-tol", "-1",
+           "--pref-format", "mp3", "--pref-min-bitrate", "315", "--search-timeout", str(timeout_ms),
+           "--no-progress"]
+    kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                           cwd=work_dir, timeout=timeout_ms / 1000 + 90, **kwargs)
+    finally:
+        try:
+            os.remove(conf)
+        except OSError:
+            pass
+    out = p.stdout.decode("utf-8", "ignore")
+    results = parse_search_output(out)
+    if not results and p.returncode not in (0, None):
+        err = (p.stderr.decode("utf-8", "ignore") + out).strip().splitlines()[-6:]
+        raise RuntimeError("Căutarea a eșuat:\n" + "\n".join(err))
+    return results
+
+
 def cleanup_incomplete(out_dir: str) -> int:
     """Șterge fișierele descărcate pe jumătate (Sockseek le pune extensia .incomplete)."""
     n = 0
@@ -266,7 +355,7 @@ def run_download(items: list[DownloadItem], out_dir: str, username: str, passwor
                  quality: str = "mp3_320", exe: str | None = None, work_dir: str | None = None,
                  on_event: Callable[[DownloadEvent], None] | None = None,
                  cancelled: Callable[[], object] | None = None, wide: bool = False,
-                 length_tol: int = 5) -> DownloadSummary:
+                 length_tol: int = 5, link: str = "") -> DownloadSummary:
     """Rulează Sockseek și raportează evenimentele.
 
     cancelled() poate întoarce:
@@ -288,7 +377,11 @@ def run_download(items: list[DownloadItem], out_dir: str, username: str, passwor
     write_csv(csv_path, items)
     write_config(conf_path, username, password)
 
-    cmd = build_command(exe, csv_path, out_dir, conf_path, quality, length_tol=length_tol, wide=wide)
+    if link:   # un fișier ales manual din rezultatele căutării
+        cmd = [exe, link, "-c", conf_path, "-o", out_dir, "--no-skip-existing", "--no-write-index",
+               "--progress-json", "--no-progress"]
+    else:
+        cmd = build_command(exe, csv_path, out_dir, conf_path, quality, length_tol=length_tol, wide=wide)
     kwargs = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW

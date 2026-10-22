@@ -23,9 +23,10 @@ from ..core import soulseek as slsk
 from ..core import sources as src
 from ..core import spotify as sp
 from ..core import youtube as yt
-from ..core.matching import Matcher, search_query
+from ..core.matching import Matcher, search_query, wide_query
 from ..core.sources import PlaylistStore, SavedPlaylist, track_from_dict, track_to_dict
 from .common import AppState, Task, data_dir, fmt_duration, open_file, reveal_in_folder, settings
+from .slsk_search import ManualSearchDialog
 from .settings_tab import (download_dir, playlist_subfolders, slsk_credentials, slsk_quality,
                            spotify_client)
 
@@ -60,11 +61,8 @@ FILTERS = {
     "Ignorate": (IGNORED,),
 }
 SEARCH_SITES = {
-    "SoundCloud": "https://soundcloud.com/search?q={}",
     "Bandcamp": "https://bandcamp.com/search?q={}",
-    "Beatport": "https://www.beatport.com/search?q={}",
     "YouTube": "https://www.youtube.com/results?search_query={}",
-    "Google": "https://www.google.com/search?q={}",
 }
 C_CHECK, C_ARTIST, C_TITLE, C_DUR, C_STATUS, C_QA, C_QT, C_FILE = range(8)
 
@@ -106,6 +104,22 @@ def open_search(site: str, track: sp.SpotifyTrack):
     webbrowser.open(SEARCH_SITES[site].format(q))
 
 
+def manual_search(panel, i: int, row, dest: str):
+    """Deschide căutarea manuală pentru o piesă și descarcă fișierul ales."""
+    if panel.runner.busy():
+        QMessageBox.information(panel, "Ocupat", "Se descarcă deja ceva. Așteaptă sau oprește descărcarea.")
+        return
+    q = f"{row.track.main_artist} {slsk.pretty_title(row.track.title)}".strip()
+    dlg = ManualSearchDialog(q, row.track.label, row.track.duration, panel)
+    if dlg.exec() != QDialog.Accepted or not dlg.chosen:
+        return
+    item = slsk.DownloadItem(row.track, row.artist_q, row.title_q, dest)
+    if panel.runner.start(panel, [item], link=dlg.chosen.link):
+        panel._dl_idx = [i]
+        row.status = QUEUED
+        panel._fill_row(i)
+
+
 # --------------------------------------------------------------------------
 class DownloadRunner(QObject):
     """O singură descărcare odată, folosită de ambele subtaburi."""
@@ -131,7 +145,7 @@ class DownloadRunner(QObject):
         self._running = False
         self.error.emit(msg)
 
-    def start(self, owner, items: list[slsk.DownloadItem], wide=False, length_tol=5) -> bool:
+    def start(self, owner, items: list[slsk.DownloadItem], wide=False, length_tol=5, link="") -> bool:
         if self.busy():
             QMessageBox.information(None, "Ocupat", "Se descarcă deja ceva. Așteaptă sau oprește descărcarea.")
             return False
@@ -159,14 +173,15 @@ class DownloadRunner(QObject):
                     done[0] += 1
                 progress(done[0], len(items), json.dumps(asdict(ev)))
             return slsk.run_download(items, out, user, pw, quality, exe, work, on_event, cancelled,
-                                     wide=wide, length_tol=length_tol)
+                                     wide=wide, length_tol=length_tol, link=link)
 
         self.task = Task(work_fn, self)
         self.task.progress.connect(self._progress)
         self.task.succeeded.connect(self._succeeded)
         self.task.failed.connect(self._failed)
         self._running = True
-        self.started.emit(f"Descarc {len(items)} piese de pe Soulseek" + (" (căutare largă)" if wide else "") +
+        self.started.emit((f"Descarc fișierul ales: {link.rsplit('/', 1)[-1]}" if link else
+                           f"Descarc {len(items)} piese de pe Soulseek" + (" (căutare largă)" if wide else "")) +
                           f" în {out}")
         self.task.start()
         return True
@@ -701,6 +716,10 @@ class PlaylistsPanel(TrackTableBase):
             return
         r = self.rows[i]
         m = QMenu(self)
+        if r.status in DOWNLOADABLE:
+            m.addAction("Caută manual pe Soulseek…",
+                        lambda: (setattr(self, "_dl_playlist", self.current),
+                                 manual_search(self, i, r, playlist_dir(self.current))))
         for site in SEARCH_SITES:
             m.addAction(f"Caută pe {site}", lambda s=site: open_search(s, r.track))
         m.addSeparator()
@@ -874,7 +893,8 @@ class NotFoundPanel(TrackTableBase):
 
         b_retry = QPushButton("Încearcă din nou bifatele")
         b_wide = QPushButton("Încearcă cu căutare mai largă")
-        b_wide.setToolTip("Mai lent, acceptă durate mai diferite și caută și fără paranteze / feat.")
+        b_wide.setToolTip("Caută „artist + un cuvânt distinctiv din titlu” și acceptă durate mai diferite.\n"
+                          "Durata e verificată, ca să nu ia altă piesă.")
         b_retry.clicked.connect(lambda: self.retry(False))
         b_wide.clicked.connect(lambda: self.retry(True))
         self.b_retry, self.b_wide = b_retry, b_wide
@@ -884,6 +904,11 @@ class NotFoundPanel(TrackTableBase):
         b_none.clicked.connect(lambda: self._set_checks(False))
 
         sites = QHBoxLayout()
+        b_man = QPushButton("Caută manual pe Soulseek…")
+        b_man.setToolTip("Scrii tu căutarea, vezi toate rezultatele (calitate, viteză, slot liber) și alegi fișierul.")
+        b_man.clicked.connect(lambda: self._manual())
+        sites.addWidget(b_man)
+        sites.addSpacing(20)
         sites.addWidget(QLabel("Caută selecția pe:"))
         for site in SEARCH_SITES:
             b = QPushButton(site)
@@ -1058,12 +1083,26 @@ class NotFoundPanel(TrackTableBase):
             return
         r = self.rows[i]
         m = QMenu(self)
+        if r.track.artists:
+            m.addAction("Caută manual pe Soulseek…", lambda: self._manual(i))
         for site in SEARCH_SITES:
             m.addAction(f"Caută pe {site}", lambda s=site: open_search(s, r.track))
         m.addSeparator()
         m.addAction("Copiază „Artist - Titlu”",
                     lambda: QGuiApplication.clipboard().setText(f"{r.track.artist} - {r.track.title}"))
         m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _manual(self, i=None):
+        if i is None:
+            sel = self._selected()
+            if len(sel) != 1:
+                QMessageBox.information(self, "Caută manual", "Selectează o singură piesă din tabel.")
+                return
+            i = sel[0]
+        r = self.rows[i]
+        if not r.track.artists:
+            return
+        manual_search(self, i, r, playlist_dir(self.store.get(r.playlist_id)))
 
     def _double_clicked(self, i, c):
         if i < len(self.rows) and self.rows[i].path and c not in (N_QA, N_QT):
@@ -1121,8 +1160,11 @@ class NotFoundPanel(TrackTableBase):
         for i in idx:
             p = self.store.get(self.rows[i].playlist_id)
             any_yt = any_yt or bool(p and p.source == "youtube")
-            items.append(slsk.DownloadItem(self.rows[i].track, self.rows[i].artist_q, self.rows[i].title_q,
-                                           playlist_dir(p)))
+            r = self.rows[i]
+            aq, tq = r.artist_q, r.title_q
+            if wide and not (p and r.track.id in p.custom_queries):
+                aq, tq = wide_query(r.track)     # artist + un cuvânt distinctiv din titlu
+            items.append(slsk.DownloadItem(r.track, aq, tq, playlist_dir(p)))
         if not self.runner.start(self, items, wide=wide, length_tol=20 if any_yt else 5):
             return
         self._dl_idx = idx

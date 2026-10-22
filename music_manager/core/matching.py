@@ -148,3 +148,32 @@ def search_query(st: SpotifyTrack) -> tuple[str, str]:
     # păstrăm versiunea (remixul) în căutare, dar fără cuvintele-zgomot
     title = core + (" " + ver if ver else "")
     return _words(_ascii(artist)), title.strip()
+
+
+# cuvinte care nu ajută la căutare (prea comune)
+_STOP = set("""a an the of in on at for to from by with and or but is it its i me my you your we our he she
+they them this that these those be been are was were do does did not no yes so if as like love baby
+oh yeah la le les de des du el los las un una une der die das und mit von feat ft featuring vs x
+mix remix edit version original extended radio club dub rework rmx bootleg vip instrumental live
+remaster remastered mono stereo pt part vol""".split())
+
+
+def distinctive_words(text: str, n: int = 1) -> list[str]:
+    """Cele mai „rare” cuvinte dintr-un text: lungi și care nu sunt cuvinte comune."""
+    words = [w for w in _words(_ascii(text)).split() if w not in _STOP and len(w) >= 3 and not w.isdigit()]
+    seen, out = set(), []
+    for w in sorted(words, key=lambda w: (-len(w), words.index(w))):
+        if w not in seen:
+            seen.add(w)
+            out.append(w)
+    return out[:n]
+
+
+def wide_query(st: SpotifyTrack) -> tuple[str, str]:
+    """Căutarea „artist + un cuvânt distinctiv din titlu” (+ un cuvânt din numele remixului)."""
+    artist = _words(_ascii(st.main_artist))
+    core, ver = split_title(st.title)
+    words = distinctive_words(core, 1) + distinctive_words(ver, 1)
+    if not words:          # titlu foarte scurt / numai cuvinte comune: păstrăm titlul întreg
+        return search_query(st)
+    return artist, " ".join(words)
