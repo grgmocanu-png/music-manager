@@ -80,7 +80,8 @@ def write_tags_in_background(parent, jobs: list[tuple[str, dict, object]], on_do
                     cover = tf.download_cover(cover)
                 if fields or cover:
                     current = tagmod.read_tags(path).fields
-                    tagmod.write_tags(path, {**current, **fields}, cover)
+                    clear = tuple(k for k, v in fields.items() if v == "")
+                    tagmod.write_tags(path, {**current, **fields}, cover, clear)
             except Exception as e:
                 errors.append(f"{os.path.basename(path)}: {e}")
             progress(i + 1, len(jobs), os.path.basename(path))
@@ -132,7 +133,7 @@ def rename_in_background(parent, plan, on_done, title="Redenumesc fișierele"):
 
 # --- taguri online -------------------------------------------------------------
 class TagFinderDialog(QDialog):
-    COLS = ["", "Piesă", "Gen", "Stil (→ Comentariu)", "An", "Label", "Copertă", "Găsit în"]
+    COLS = ["", "Piesă", "Gen", "Stil (→ Comentariu)", "An", "Label", "Copertă", "Găsit în", "Verificată"]
 
     def __init__(self, tracks: list[lib.Track], spotify=None, parent=None):
         super().__init__(parent)
@@ -146,9 +147,9 @@ class TagFinderDialog(QDialog):
 
         token = settings().value("discogs/token", "") or ""
         src = "Discogs → MusicBrainz → Spotify" if token else "MusicBrainz → Spotify (fără token Discogs)"
-        info = QLabel(f"Caut genul, stilul, anul, labelul și coperta. Surse: <b>{src}</b>. "
-                      "Nimic nu se scrie până nu apeși „Aplică”. Durează ~1–2 secunde pe piesă "
-                      "(sursele limitează numărul de cereri).")
+        info = QLabel(f"Caut genul, stilul, anul, labelul și coperta <b>doar pentru piesele bifate</b>. "
+                      f"Surse: <b>{src}</b>. Piesele căutate deja nu se mai bifează implicit. Nimic nu se scrie "
+                      "până nu apeși „Aplică”. Durează ~1–2 secunde pe piesă. Poți lucra în alte taburi cât caută.")
         info.setWordWrap(True)
         self.c_genre = QCheckBox("Gen + stil")
         self.c_year = QCheckBox("An")
@@ -168,7 +169,18 @@ class TagFinderDialog(QDialog):
         opts.addWidget(self.c_orig)
         opts.addStretch()
 
-        self.table = _table(self.COLS, (28, 300, 150, 200, 60, 140, 70))
+        self.table = _table(self.COLS, (28, 300, 150, 200, 60, 140, 70, 160))
+        b_all, b_none, b_new = QPushButton("Bifează tot"), QPushButton("Debifează tot"), \
+            QPushButton("Bifează doar ce n-a fost verificat")
+        b_all.clicked.connect(lambda: self._set_checks(lambda i: True))
+        b_none.clicked.connect(lambda: self._set_checks(lambda i: False))
+        b_new.clicked.connect(lambda: self._set_checks(lambda i: not self._searched(i)))
+        self.c_again = QCheckBox("Caută din nou și piesele verificate deja")
+        sel = QHBoxLayout()
+        for b in (b_all, b_none, b_new):
+            sel.addWidget(b)
+        sel.addWidget(self.c_again)
+        sel.addStretch()
         self.progress = QProgressBar()
         self.status = QLabel()
         self.b_start = QPushButton("Caută")
@@ -186,15 +198,27 @@ class TagFinderDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(info)
         lay.addLayout(opts)
+        lay.addLayout(sel)
         lay.addWidget(self.table, 1)
         lay.addWidget(self.progress)
         lay.addLayout(row)
         self._fill_initial()
 
+    def _searched(self, i) -> str:
+        from .common import history
+        return history().done(self.tracks[i].path, "taguri")
+
+    def _set_checks(self, fn):
+        for i in range(self.table.rowCount()):
+            if not self.table.isRowHidden(i):
+                self.table.item(i, 0).setCheckState(Qt.Checked if fn(i) else Qt.Unchecked)
+
     def _fill_initial(self):
         self.table.setRowCount(len(self.tracks))
         for i, t in enumerate(self.tracks):
-            self.table.setItem(i, 0, _item("", check=False))
+            done = self._searched(i)
+            self.table.setItem(i, 0, _item("", check=not done))
+            self.table.setItem(i, 8, _item(done[:16].replace("T", " ") if done else "—", "gray"))
             self.table.setItem(i, 1, _item(f"{t.artist} - {t.display_title}", tooltip=t.path))
             self.table.setItem(i, 2, _item(t.genre or "—", "gray"))
             self.table.setItem(i, 3, _item(t.comment or "—", "gray"))
@@ -224,11 +248,20 @@ class TagFinderDialog(QDialog):
         finder = TagFinder(settings().value("discogs/token", "") or "", self.spotify, genre_mapper(),
                            use_musicbrainz=settings().value("tags/musicbrainz", True) not in (False, "false"),
                            original_release=self.c_orig.isChecked())
-        todo = [(i, t, self._need(t)) for i, t in enumerate(self.tracks)]
+        rows = [i for i in range(self.table.rowCount()) if self.table.item(i, 0).checkState() == Qt.Checked]
+        if not rows:
+            QMessageBox.information(self, "Taguri", "Bifează piesele pe care vrei să le caut.")
+            return
+        if not self.c_again.isChecked():
+            rows = [i for i in rows if not self._searched(i)]
+        todo = [(i, self.tracks[i], self._need(self.tracks[i])) for i in rows]
         todo = [x for x in todo if x[2] and x[1].artist and (x[1].title or x[1].filename)]
         if not todo:
-            QMessageBox.information(self, "Taguri", "Toate piesele au deja ce ai bifat (sau n-au artist/titlu).")
+            QMessageBox.information(self, "Taguri", "Piesele bifate fie au fost căutate deja (bifează „Caută din nou”), "
+                                    "fie au deja tot ce ai cerut, fie n-au artist/titlu.")
             return
+        for i in range(self.table.rowCount()):
+            self.table.item(i, 0).setCheckState(Qt.Unchecked)     # de acum bifele = ce aplic
 
         def work(progress, cancelled):
             for n, (i, t, need) in enumerate(todo):
@@ -240,7 +273,11 @@ class TagFinderDialog(QDialog):
                     progress(n, len(todo), json.dumps({"error": str(e)}))
                     return False
                 self.results[i] = r
+                from .common import history
+                history().mark([t.path], "taguri", save=(n % 10 == 9))
                 progress(n + 1, len(todo), json.dumps({"row": i}))
+            from .common import history
+            history().save()
             return True
 
         from .jobs import Job
@@ -281,6 +318,7 @@ class TagFinderDialog(QDialog):
             self.table.setItem(i, 6, _item("nouă", "#27ae60", tooltip=r.cover_url))
             ch = True
         self.table.setItem(i, 7, _item(r.source or "negăsită", None if r.source else "#c0392b", tooltip=r.match))
+        self.table.setItem(i, 8, _item("acum", "#27ae60"))
         self.table.item(i, 0).setCheckState(Qt.Checked if ch else Qt.Unchecked)
         self.status.setText(f"{d} / {total} verificate")
 
@@ -320,64 +358,12 @@ class TagFinderDialog(QDialog):
         self.accept()
 
 
-# --- nume curate ---------------------------------------------------------------
-class NameCleanupDialog(QDialog):
-    def __init__(self, tracks: list[lib.Track], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Curăță numele — {len(tracks)} piese")
-        self.resize(1100, 620)
-        self.tracks = tracks
-        self.applied = False
-        info = QLabel("Scot din numele fișierelor site-urile, „[Free DL]”, „320kbps”, „(Official Video)”, "
-                      "„_ytmp3”, numerele de piesă etc. Previzualizare mai jos; se poate anula.")
-        info.setWordWrap(True)
-        self.c_num = QCheckBox("Scoate numerele de piesă de la început (01, A1…)")
-        self.c_num.setChecked(True)
-        self.c_tags = QCheckBox("Curăță și tagurile Artist / Titlu / Album")
-        self.c_tags.setChecked(True)
-        self.c_num.toggled.connect(self.refresh)
-        self.table = _table(["Acum", "Devine", "Stare"], (450, 450))
-        self.summary = QLabel()
-        bb = QDialogButtonBox()
-        self.b_ok = bb.addButton("Aplică", QDialogButtonBox.AcceptRole)
-        bb.addButton("Renunță", QDialogButtonBox.RejectRole)
-        bb.accepted.connect(self.apply)
-        bb.rejected.connect(self.reject)
-        lay = QVBoxLayout(self)
-        lay.addWidget(info)
-        o = QHBoxLayout()
-        o.addWidget(self.c_num)
-        o.addWidget(self.c_tags)
-        o.addStretch()
-        lay.addLayout(o)
-        lay.addWidget(self.table, 1)
-        lay.addWidget(self.summary)
-        lay.addWidget(bb)
-        self.refresh()
-
-    def refresh(self):
-        self.plan = plan_name_cleanup(self.tracks, self.c_num.isChecked())
-        rows = [p for p in self.plan if p.status != "same"]
-        self.table.setRowCount(len(rows))
-        colors = {"ok": "#27ae60", "conflict": "#c0392b"}
-        labels = {"ok": "Se redenumește", "conflict": "Ar suprascrie alt fișier — sărit"}
-        for i, p in enumerate(rows):
-            self.table.setItem(i, 0, _item(os.path.basename(p.src), tooltip=p.src))
-            self.table.setItem(i, 1, _item(os.path.basename(p.dest)))
-            self.table.setItem(i, 2, _item(labels[p.status], colors[p.status]))
-        n = sum(1 for p in self.plan if p.status == "ok")
-        self.tag_jobs = [(t.path, clean_tag_fields(t), None) for t in self.tracks if clean_tag_fields(t)]
-        self.summary.setText(f"<b>{n}</b> fișiere de redenumit · {len(self.plan) - len(rows)} deja curate · "
-                             f"{len(self.tag_jobs)} cu taguri de curățat")
-        self.b_ok.setEnabled(n > 0 or bool(self.tag_jobs))
-
-    def apply(self):
-        if self.c_tags.isChecked() and self.tag_jobs:
-            write_tags_in_background(self.parent(), self.tag_jobs, None, "Curăț tagurile")
-        cb = getattr(self, "on_applied", None)
-        rename_in_background(self.parent(), self.plan, cb, "Curăț numele fișierelor")
-        self.applied = True
-        self.accept()
+# --- nume curate: mutat în cleanup_dialogs --------------------------------------
+def __getattr__(name):
+    if name == "NameCleanupDialog":
+        from .cleanup_dialogs import NameCleanupDialog
+        return NameCleanupDialog
+    raise AttributeError(name)
 
 
 # --- editare în masă ------------------------------------------------------------
@@ -697,7 +683,7 @@ class SmartPlaylistDialog(QDialog):
         self.count = QLabel()
         b_prev = QPushButton("Câte piese?")
         b_prev.clicked.connect(self._preview)
-        note = QLabel("BPM-ul acceptă și dublu/jumătate (ex. 62 BPM intră la 120–128). "
+        note = QLabel("BPM-ul se compară exact (62 nu intră la 120–128). "
                       "Playlistul se actualizează singur când adaugi muzică.")
         note.setStyleSheet("color: gray;")
         note.setWordWrap(True)

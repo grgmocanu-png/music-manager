@@ -328,6 +328,7 @@ class RenameItem:
     src: str
     dest: str
     status: str = "ok"   # ok | same | missing | conflict
+    note: str = ""       # de ce (ce tag lipsește / cu ce fișier s-ar ciocni)
 
 
 def plan_renames(tracks: list[Track], template: str, base_dir: str | None = None) -> list[RenameItem]:
@@ -341,7 +342,8 @@ def plan_renames(tracks: list[Track], template: str, base_dir: str | None = None
     for t in tracks:
         rel = render_template(template, t)
         if rel is None:
-            plan.append(RenameItem(t.path, t.path, "missing"))
+            need = [n for n, v in (("artist", t.artist), ("titlu", t.title)) if not v]
+            plan.append(RenameItem(t.path, t.path, "missing", "lipsește " + " și ".join(need or ["artistul"])))
             continue
         root = base_dir if (base_dir and "/" in template) else os.path.dirname(t.path)
         dest = os.path.normpath(os.path.join(root, *rel.split("/"))) + os.path.splitext(t.path)[1].lower()
@@ -349,9 +351,12 @@ def plan_renames(tracks: list[Track], template: str, base_dir: str | None = None
             plan.append(RenameItem(t.path, dest, "same"))
             continue
         key = os.path.normcase(dest)
-        exists_other = os.path.exists(dest) and os.path.normcase(os.path.realpath(dest)) != os.path.normcase(os.path.realpath(t.path))
-        if key in taken or exists_other:
-            plan.append(RenameItem(t.path, dest, "conflict"))
+        exists_other = os.path.exists(dest) and not same_file(dest, t.path)
+        if key in taken:
+            plan.append(RenameItem(t.path, dest, "conflict", "același nume nou ca: " + taken[key]))
+            continue
+        if exists_other:
+            plan.append(RenameItem(t.path, dest, "conflict", "există deja fișierul: " + dest))
             continue
         taken[key] = t.path
         plan.append(RenameItem(t.path, dest, "ok"))

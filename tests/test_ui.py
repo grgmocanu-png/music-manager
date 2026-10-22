@@ -101,8 +101,9 @@ def test_main_window_smoke(app, tmp_path):
     # familii, sugestii de playlist, coloana Playlisturi
     daft = next(i for i in lv.items if i.track.artist == "Daft Punk")
     assert daft.family == "House"
-    sugg, create = lv._suggest_playlists([daft])
-    assert create == "House 120–130"
+    assert lv._suggest_playlists([daft], "bpm")[1] == "120–130"
+    assert lv._suggest_playlists([daft], "family")[1] == "House"
+    assert lv._suggest_playlists([daft], "title") == ([], "")
     assert "Set" in daft.playlists
     lv.fam_menu.actions()[2].setChecked(True)
     lv.clear_filters()
@@ -151,8 +152,15 @@ def test_main_window_smoke(app, tmp_path):
     win.cleanup._scanned(tracks)
     dlg = DuplicatesDialog(find_duplicates(tracks), win)
     assert dlg.tree.topLevelItemCount() == 1
+    dlg.check_format("mp3")
+    assert len(dlg._checked()) == 1            # niciodată toate piesele dintr-un grup
+    dlg._set_all(False)
+    assert dlg._checked() == []
     rd = RenameDialog(tracks, win)
     assert rd.table.rowCount() == 4
+    rd.plan_table._set_all(False)
+    assert rd.plan_table.checked() == []
+    rd.plan_table._count_clicked("conflict")
 
     # download: rânduri simulate
     from music_manager.core.sources import SavedPlaylist

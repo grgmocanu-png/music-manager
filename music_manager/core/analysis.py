@@ -295,7 +295,8 @@ def estimate_energy(x: np.ndarray, sr: int = SR) -> int:
 
 
 # --- tot la un loc, cu cache ----------------------------------------------
-def cache_key(path: str) -> str:
+def _old_key(path: str) -> str:
+    """Cheia veche (depindea de data modificării — se invalida la orice scriere de taguri)."""
     try:
         st = os.stat(path)
         raw = f"{os.path.abspath(path)}|{st.st_size}|{int(st.st_mtime)}|{ANALYSIS_VERSION}"
@@ -304,13 +305,39 @@ def cache_key(path: str) -> str:
     return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
 
 
+def cache_key(path: str) -> str:
+    """Cheia după cale: analiza rămâne valabilă când se schimbă doar tagurile fișierului."""
+    raw = f"{os.path.normcase(os.path.abspath(path))}|v{ANALYSIS_VERSION}"
+    return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
+
+
 def load_cached(path: str, cache_dir: str) -> Analysis | None:
     p = os.path.join(cache_dir, cache_key(path) + ".json")
+    old = os.path.join(cache_dir, _old_key(path) + ".json")
+    for candidate in (p, old):
+        try:
+            with open(candidate, "r", encoding="utf-8") as f:
+                a = Analysis(**json.load(f))
+        except (OSError, ValueError, TypeError):
+            continue
+        if candidate == old:            # migrăm la cheia nouă
+            try:
+                os.replace(old, p)
+            except OSError:
+                pass
+        return a
+    return None
+
+
+def move_cached(old_path: str, new_path: str, cache_dir: str) -> None:
+    """Fișierul a fost redenumit / mutat: analiza îl urmează."""
+    a = os.path.join(cache_dir, cache_key(old_path) + ".json")
+    b = os.path.join(cache_dir, cache_key(new_path) + ".json")
     try:
-        with open(p, "r", encoding="utf-8") as f:
-            return Analysis(**json.load(f))
-    except (OSError, ValueError, TypeError):
-        return None
+        if os.path.exists(a) and not os.path.exists(b):
+            os.replace(a, b)
+    except OSError:
+        pass
 
 
 def save_cached(path: str, cache_dir: str, a: Analysis) -> None:

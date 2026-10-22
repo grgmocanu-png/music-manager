@@ -89,3 +89,13 @@ def test_broken_file_does_not_crash(tmp_path):
     p.write_bytes(b"not audio at all" * 10)
     tracks = scan([str(tmp_path)])
     assert len(tracks) == 1
+
+
+def test_clear_comment(tmp_path):
+    p = make(tmp_path / "c.mp3", ["-c:a", "libmp3lame"])
+    tagmod.write_tags(p, {"artist": "A", "title": "T", "comment": "02 Danceability"})
+    assert tagmod.read_tags(p).fields["comment"] == "02 Danceability"
+    cur = tagmod.read_tags(p).fields
+    tagmod.write_tags(p, {**cur, "comment": ""}, None, ("comment",))
+    f = tagmod.read_tags(p).fields
+    assert f["comment"] == "" and f["artist"] == "A"

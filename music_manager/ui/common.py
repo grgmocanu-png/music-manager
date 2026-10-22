@@ -92,14 +92,45 @@ class Task(QThread):
             self.failed.emit(f"{e.__class__.__name__}: {e}")
 
 
+_HISTORY = None
+
+
+def analysis_dir() -> str:
+    return os.path.join(data_dir(), "analiza")
+
+
+def history():
+    """Istoricul de curățenie (prin ce pași a trecut fiecare piesă)."""
+    global _HISTORY
+    if _HISTORY is None:
+        from ..core.history import CleanupHistory
+        _HISTORY = CleanupHistory(os.path.join(data_dir(), "curatenie.json"))
+    return _HISTORY
+
+
+def after_moves(moves: list[tuple[str, str]]) -> None:
+    """Fișiere redenumite / mutate de aplicație: istoricul, analiza și playlisturile le urmează."""
+    if not moves:
+        return
+    from ..core import analysis as an
+    history().moved(moves)
+    for old, new in moves:
+        an.move_cached(old, new, analysis_dir())
+    if AppState.instance is not None:
+        AppState.instance.files_moved.emit(list(moves))
+
+
 class AppState(QObject):
     """Biblioteca încărcată, comună tuturor taburilor."""
+    instance = None
     tracks_changed = Signal()
+    files_moved = Signal(list)        # [(cale veche, cale nouă)]
     send_to_convert = Signal(list)    # listă de căi
     send_to_playlist = Signal(list)   # listă de Track
 
     def __init__(self):
         super().__init__()
+        AppState.instance = self
         self.tracks: list[Track] = []
         raw = settings().value("library/folders", []) or []
         if isinstance(raw, str):
@@ -119,7 +150,7 @@ class AppState(QObject):
 COLUMNS = [
     ("Artist", "artist"), ("Titlu", "title"), ("Album", "album"), ("Gen", "genre"),
     ("An", "year"), ("BPM", "bpm"), ("Cheie", "key"), ("Durată", "duration"),
-    ("Calitate", "quality"), ("Folder", "folder"),
+    ("Calitate", "quality"), ("Folder", "folder"), ("Curățenie", "cleanup"),
 ]
 SORT_ROLE = Qt.UserRole + 1
 TRACK_ROLE = Qt.UserRole + 2
@@ -129,6 +160,7 @@ class TrackModel(QAbstractTableModel):
     def __init__(self, tracks: list[Track] | None = None, parent=None):
         super().__init__(parent)
         self.tracks: list[Track] = tracks or []
+        self.status_fn = None         # pentru coloana „Curățenie”
 
     def set_tracks(self, tracks: list[Track]):
         self.beginResetModel()
@@ -162,6 +194,8 @@ class TrackModel(QAbstractTableModel):
                 return t.quality_label
             if col == "folder":
                 return os.path.dirname(t.path)
+            if col == "cleanup":
+                return self.status_fn(t.path) if self.status_fn else ""
             if col == "key":
                 cam = to_camelot(t.key)
                 return f"{cam} ({t.key})" if cam and cam.upper() != t.key.upper() else (t.key or "")
@@ -196,15 +230,22 @@ class TrackFilterProxy(QSortFilterProxyModel):
         super().__init__(parent)
         self.setSortRole(SORT_ROLE)
         self._words: list[str] = []
+        self.only_unfinished = None   # funcție path -> bool (True = curățat complet)
 
     def set_text(self, text: str):
         self._words = normalize(text).split()
         self.invalidateFilter()
 
+    def set_only_unfinished(self, fn):
+        self.only_unfinished = fn
+        self.invalidateFilter()
+
     def filterAcceptsRow(self, row, parent):
+        t: Track = self.sourceModel().tracks[row]
+        if self.only_unfinished and self.only_unfinished(t.path):
+            return False
         if not self._words:
             return True
-        t: Track = self.sourceModel().tracks[row]
         hay = normalize(" ".join([t.artist, t.title, t.album, t.genre, t.filename]))
         return all(w in hay for w in self._words)
 

@@ -27,6 +27,7 @@ ROLES = ["Opener", "Warm-up", "Build", "Peak", "Closer", "After"]
 _ROLE_BY_LOWER = {r.lower(): r for r in ROLES}
 _ROLE_BY_LOWER.update({"warmup": "Warm-up", "warm up": "Warm-up", "peak time": "Peak", "peaktime": "Peak",
                        "afterhours": "After", "after hours": "After", "intro": "Opener", "outro": "Closer"})
+_JUNK_COMMENT_RE = re.compile(r"^\s*(\d{1,2}\s*[-.]?\s*)?danceability(\s*[:=]?\s*\d{1,2})?\s*$", re.I)
 _ENERGY_RE = re.compile(r"^(?:e|energy|energie)\s*:?\s*(10|[1-9])$", re.I)
 
 
@@ -40,12 +41,18 @@ def parse_comment(comment: str) -> tuple[str, str, int]:
         if low in _ROLE_BY_LOWER and not role:
             role = _ROLE_BY_LOWER[low]
             continue
+        if _JUNK_COMMENT_RE.match(part):
+            continue                      # „02 Danceability” (pus de alt program) — îl ignorăm
         m = _ENERGY_RE.match(part)
         if m and not energy:
             energy = int(m.group(1))
             continue
         style_parts.append(part)
     return " | ".join(style_parts), role, energy
+
+
+def has_junk_comment(comment: str) -> bool:
+    return any(_JUNK_COMMENT_RE.match(p) for p in (comment or "").split("|"))
 
 
 def compose_comment(style: str, role: str = "", energy: int = 0) -> str:
@@ -302,12 +309,12 @@ RULE_OPS = {
 }
 
 
-def _bpm_in(b: float, lo: float, hi: float) -> bool:
+def _bpm_in(b: float, lo: float, hi: float, half_double: bool = False) -> bool:
+    """BPM-ul în interval. Fără dublare/înjumătățire (doar „piese care se mixează” o folosește)."""
     if not b:
         return False
-    if lo and hi:
-        return any(lo <= x <= hi for x in (b, b * 2, b / 2))
-    return (not lo or b >= lo) and (not hi or b <= hi)
+    vals = (b, b * 2, b / 2) if half_double else (b,)
+    return any((not lo or x >= lo) and (not hi or x <= hi) for x in vals)
 
 
 def _list(v) -> list[str]:
@@ -583,15 +590,17 @@ def relocate_by_name(missing: list[str], folder: str) -> dict[str, str]:
     return out
 
 
-def playlist_profile(items: list[LibItem]) -> tuple[str, float]:
-    """Familia dominantă și BPM-ul median al unui playlist."""
-    fams: dict[str, int] = {}
-    for it in items:
-        if it.family:
-            fams[it.family] = fams.get(it.family, 0) + 1
+def playlist_profile(items: list[LibItem]) -> tuple[str, float, str]:
+    """Familia dominantă, BPM-ul median și rolul dominant al unui playlist."""
+    def top(values):
+        c: dict[str, int] = {}
+        for v in values:
+            if v:
+                c[v] = c.get(v, 0) + 1
+        return max(c.items(), key=lambda kv: kv[1])[0] if c else ""
     bpms = sorted(it.bpm for it in items if it.bpm)
-    fam = max(fams.items(), key=lambda kv: kv[1])[0] if fams else ""
-    return fam, (bpms[len(bpms) // 2] if bpms else 0.0)
+    return (top(it.family for it in items), (bpms[len(bpms) // 2] if bpms else 0.0),
+            top(it.role for it in items))
 
 
 def bpm_bucket(bpm: float, width: int = 10) -> tuple[int, int]:

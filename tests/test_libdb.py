@@ -114,3 +114,31 @@ def test_traktor_history(tmp_path):
     assert len(h) == 10
     last = [v for k, v in h.items() if k.endswith("t9.mp3")][0]
     assert last == [1.0]
+
+
+def test_history_and_danceability(tmp_path):
+    from music_manager.core.history import CleanupHistory
+    from music_manager.core.libdb import has_junk_comment, parse_comment
+    h = CleanupHistory(str(tmp_path / "h.json"))
+    h.mark(["/a/x.mp3"], "nume")
+    h.moved([("/a/x.mp3", "/a/Artist - X.mp3")])
+    h2 = CleanupHistory(str(tmp_path / "h.json"))
+    assert h2.done("/a/Artist - X.mp3", "nume") and not h2.done("/a/x.mp3", "nume")
+    assert not h2.complete("/a/Artist - X.mp3")
+    assert has_junk_comment("02 Danceability") and has_junk_comment("Deep House | 04 Danceability")
+    assert parse_comment("Deep House | 04 Danceability | Peak") == ("Deep House", "Peak", 0)
+    assert not has_junk_comment("Deep House | Peak | E7")
+
+
+def test_trash_and_bpm_exact(tmp_path):
+    import sys
+    from music_manager.core.libdb import _bpm_in
+    assert not _bpm_in(62, 120, 128) and _bpm_in(62, 120, 128, half_double=True) and _bpm_in(124, 120, 128)
+    if sys.platform.startswith("linux"):
+        import os
+        os.environ["HOME"] = str(tmp_path)
+        from music_manager.core.trash import to_trash
+        f = tmp_path / "a.mp3"
+        f.write_bytes(b"x")
+        done, errs = to_trash([str(f)])
+        assert done == [str(f)] and not f.exists()

@@ -33,6 +33,9 @@ class DJInfo:
     color: str = ""
     genre: str = ""
     comment: str = ""
+    artist: str = ""
+    title: str = ""
+    duration: float = 0.0
 
 
 @dataclass
@@ -94,7 +97,7 @@ def parse_traktor(path: str) -> Collection:
         p = _traktor_location(loc)
         if not p:
             continue
-        info = DJInfo()
+        info = DJInfo(artist=e.get("ARTIST", "") or "", title=e.get("TITLE", "") or "")
         tempo = e.find("TEMPO")
         if tempo is not None:
             info.bpm = round(_f(tempo.get("BPM")), 2)
@@ -110,6 +113,7 @@ def parse_traktor(path: str) -> Collection:
             info.color = inf.get("COLOR", "")
             info.genre = inf.get("GENRE", "")
             info.comment = inf.get("COMMENT", "")
+            info.duration = _f(inf.get("PLAYTIME"))
         np_ = norm_path(p)
         col.tracks[np_] = info
         # cheia folosită în playlisturi: VOLUME + DIR + FILE
@@ -156,7 +160,9 @@ def parse_rekordbox_xml(path: str) -> Collection:
         r = _f(t.get("Rating"))
         info = DJInfo(bpm=round(_f(t.get("AverageBpm")), 2), key=t.get("Tonality", "") or "",
                       rating=int(round(r / 51)) if r else 0, color=t.get("Colour", "") or "",
-                      genre=t.get("Genre", "") or "", comment=t.get("Comments", "") or "")
+                      genre=t.get("Genre", "") or "", comment=t.get("Comments", "") or "",
+                      artist=t.get("Artist", "") or "", title=t.get("Name", "") or "",
+                      duration=_f(t.get("TotalTime")))
         np_ = norm_path(p)
         col.tracks[np_] = info
         if t.get("TrackID"):

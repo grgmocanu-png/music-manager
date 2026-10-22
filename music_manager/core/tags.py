@@ -178,7 +178,7 @@ def read_tags(path: str, want_cover: bool = False) -> TagData:
     return data
 
 
-def write_tags(path: str, fields: dict, cover: tuple | None = None) -> None:
+def write_tags(path: str, fields: dict, cover: tuple | None = None, clear: tuple = ()) -> None:
     """Scrie tagurile date într-un fișier. Câmpurile goale sunt ignorate.
 
     MP3, WAV și AIFF primesc ID3v2.3 (cel mai compatibil cu Rekordbox,
@@ -190,6 +190,7 @@ def write_tags(path: str, fields: dict, cover: tuple | None = None) -> None:
     from mutagen.flac import FLAC, Picture
 
     fields = {k: v for k, v in _clean(fields).items() if v}
+    clear = tuple(c for c in clear if c not in fields)
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".mp3" or ext in (".wav", ".wave", ".aif", ".aiff"):
@@ -209,6 +210,11 @@ def write_tags(path: str, fields: dict, cover: tuple | None = None) -> None:
         if cover:
             tags.delall("APIC")
             tags.add(APIC(encoding=3, mime=cover[1], type=3, desc="Cover", data=cover[0]))
+        for c in clear:
+            if c == "comment":
+                tags.delall("COMM")
+            elif c in _ID3_FRAMES:
+                tags.delall(_ID3_FRAMES[c])
         audio.save(v2_version=3)
         return
 
@@ -217,6 +223,10 @@ def write_tags(path: str, fields: dict, cover: tuple | None = None) -> None:
         for name, keys in _VORBIS_KEYS.items():
             if name in fields:
                 audio[keys[0]] = fields[name]
+        for c in clear:
+            for k in _VORBIS_KEYS.get(c, []):
+                if k in audio:
+                    del audio[k]
         if cover:
             audio.clear_pictures()
             pic = Picture()
@@ -245,6 +255,10 @@ def write_tags(path: str, fields: dict, cover: tuple | None = None) -> None:
             t[_MP4_KEY_FREEFORM] = [MP4FreeForm(fields["key"].encode("utf-8"))]
         if "label" in fields:
             t[_MP4_LABEL_FREEFORM] = [MP4FreeForm(fields["label"].encode("utf-8"))]
+        for c in clear:
+            key = _MP4_KEYS.get(c)
+            if key and key in t:
+                del t[key]
         if cover:
             fmt = MP4Cover.FORMAT_PNG if cover[1] == "image/png" else MP4Cover.FORMAT_JPEG
             t["covr"] = [MP4Cover(cover[0], imageformat=fmt)]

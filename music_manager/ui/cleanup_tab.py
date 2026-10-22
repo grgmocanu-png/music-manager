@@ -5,12 +5,12 @@ import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
 from ..core import library as lib
-from .common import AppState, Task, TrackTable, data_dir, undo_dir
+from .common import COLUMNS, AppState, Task, TrackTable, data_dir, history, undo_dir
 from .library_tab import DuplicatesDialog, RenameDialog
 from .settings_tab import download_dir
 
@@ -44,8 +44,13 @@ class CleanupTab(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Filtrează…")
         self.search.setClearButtonEnabled(True)
-        self.table = TrackTable(self)
+        self.table = TrackTable(self, hidden_columns=("album",))
+        self.table.source.status_fn = lambda p: history().label(p) or "—"
+        self.table.setColumnWidth(len(COLUMNS) - 2, 220)
         self.search.textChanged.connect(self.table.proxy.set_text)
+        self.only_todo = QCheckBox("Doar ce nu e curățat complet")
+        self.only_todo.toggled.connect(lambda on: (self.table.proxy.set_only_unfinished(
+            history().complete if on else None), self._update_status()))
 
         b_dup = QPushButton("1. Dubluri…")
         b_clean = QPushButton("2. Curăță numele (site-uri, [Free DL]…)…")
@@ -71,7 +76,10 @@ class CleanupTab(QWidget):
         lay.addLayout(top)
         lay.addWidget(self.progress)
         lay.addWidget(self.status)
-        lay.addWidget(self.search)
+        srow = QHBoxLayout()
+        srow.addWidget(self.search, 1)
+        srow.addWidget(self.only_todo)
+        lay.addLayout(srow)
         lay.addWidget(self.table, 1)
         lay.addLayout(actions)
         lay.addWidget(hint)
@@ -124,8 +132,14 @@ class CleanupTab(QWidget):
         self.progress.setVisible(False)
         self.tracks = tracks
         self.table.set_tracks(tracks)
+        self._update_status()
+
+    def _update_status(self):
+        tracks = self.tracks
         no_tags = sum(1 for t in tracks if not (t.artist and t.title))
-        self.status.setText(f"<b>{len(tracks)}</b> piese · {no_tags} fără artist/titlu în taguri")
+        done = sum(1 for t in tracks if history().complete(t.path))
+        self.status.setText(f"<b>{len(tracks)}</b> piese · {no_tags} fără artist/titlu în taguri · "
+                            f"{done} curățate complet · afișate: {self.table.proxy.rowCount()}")
 
     def _targets(self) -> list[lib.Track]:
         return self.table.selected_tracks() or self.table.visible_tracks()
@@ -134,11 +148,14 @@ class CleanupTab(QWidget):
         if not self.tracks:
             QMessageBox.information(self, "Dubluri", "Scanează mai întâi.")
             return
-        groups = lib.find_duplicates(self._targets())
+        targets = self._targets()
+        groups = lib.find_duplicates(targets)
         if not groups:
+            history().mark([t.path for t in targets], "dubluri")
+            self.table.viewport().update()
             QMessageBox.information(self, "Dubluri", "Nu am găsit dubluri.")
             return
-        dlg = DuplicatesDialog(groups, self)
+        dlg = DuplicatesDialog(groups, self, targets)
         dlg.on_applied = self._after_change
         dlg.exec()
 
@@ -174,6 +191,7 @@ class CleanupTab(QWidget):
         dlg.show()          # nu blochează: poți adăuga playlisturi etc. cât caută
 
     def _after_change(self):
+        self.table.viewport().update()
         self._refresh_undo()
         self.scan()
 

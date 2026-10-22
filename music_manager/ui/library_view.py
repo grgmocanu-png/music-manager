@@ -430,6 +430,7 @@ class LibraryView(QWidget):
         self.mix_base: ldb.LibItem | None = None
         self._col_mtimes: dict[str, float] = {}
 
+        state.files_moved.connect(self._files_moved)
         self.worker = AnalysisWorker(self)
         self.worker.result.connect(self._analysis_done)
         self.worker.status.connect(self._analysis_status)
@@ -465,6 +466,7 @@ class LibraryView(QWidget):
         tm.addAction("Taguri online (gen, an, label, copertă)…", lambda: self.tag_finder(self.table.visible()))
         tm.addSeparator()
         tm.addAction("Curăță genurile…", self.genre_cleanup)
+        tm.addAction("Șterge „Danceability” din Comentarii", self.remove_danceability)
         tm.addAction("Curăță artiștii…", self.artist_cleanup)
         tm.addAction("Caută piesele mutate…", self.find_moved)
         tm.addSeparator()
@@ -682,6 +684,7 @@ class LibraryView(QWidget):
         self.items = ldb.build_items(self._tracks, self.db, self.collections, source_priority(),
                                      getattr(self, "history", {}))
         self.by_path = {djc.norm_path(it.path): it for it in self.items}
+        self._auto_relocate()
         self._annotate(self.items)
         self.db.save()
         self._fill_genre_menu()
@@ -715,8 +718,49 @@ class LibraryView(QWidget):
 
     def _reloc(self, path: str) -> str:
         k = djc.norm_path(path)
-        new = self.db.relocations.get(k)
+        new = self.db.relocations.get(k) or getattr(self, "auto_reloc", {}).get(k)
         return djc.norm_path(new) if new else k
+
+    def _auto_relocate(self):
+        """Piesele din playlisturile Traktor / Rekordbox care nu mai sunt la calea veche
+        (ex. scanate de pe stick) sunt căutate în biblioteca deja importată."""
+        self.auto_reloc = {}
+        by_name: dict[str, list] = {}
+        by_tag: dict[tuple, list] = {}
+        for it in self.items:
+            by_name.setdefault(os.path.basename(it.path).lower(), []).append(it)
+            if it.track.artist and it.track.title:
+                by_tag.setdefault((lib.normalize(it.track.artist), lib.normalize(it.track.title)), []).append(it)
+        found = 0
+        for c in self.collections:
+            if c.error:
+                continue
+            for paths in c.playlists.values():
+                for p in paths:
+                    k = djc.norm_path(p)
+                    if k in self.by_path or k in self.auto_reloc or k in self.db.relocations:
+                        continue
+                    if os.path.exists(p):
+                        continue
+                    cands = by_name.get(os.path.basename(p.replace("\\", "/")).lower(), [])
+                    if len(cands) != 1:
+                        info = c.tracks.get(k)
+                        if info and info.artist and info.title:
+                            tc = by_tag.get((lib.normalize(info.artist), lib.normalize(info.title)), [])
+                            if info.duration:
+                                tc = [x for x in tc if not x.track.duration or abs(x.track.duration - info.duration) < 4]
+                            cands = tc if tc else cands
+                    if cands:
+                        self.auto_reloc[k] = cands[0].path
+                        found += 1
+        return found
+
+    def _files_moved(self, moves):
+        for old, new in moves:
+            if new:
+                self.db.relink(old, new)
+        self.db.save()
+        self.reload(quiet=True)
 
     def _periodic(self):
         """La câteva minute: piese noi în folderul de download sau colecții modificate în Traktor etc."""
@@ -1016,13 +1060,17 @@ class LibraryView(QWidget):
         sel = self.table.selected()
         if not sel:
             return
+        ix = self.table.indexAt(pos)
+        col_key = COLS[ix.column()][1] if ix.isValid() else ""
         m = QMenu(self)
         m.addAction("▶ Redă", lambda: self.play(sel[0]))
         add = m.addMenu("Adaugă în playlist")
         paths = [i.path for i in sel]
-        sugg, create = self._suggest_playlists(sel)
+        sugg, create = self._suggest_playlists(sel, col_key)
         if sugg or create:
-            add.addAction("Potrivite (familie + BPM):").setEnabled(False)
+            what = {"family": "familia", "genre": "familia", "style": "familia", "bpm": "intervalul de BPM",
+                    "role": "rolul"}.get(col_key, "")
+            add.addAction(f"Potrivite după {what}:").setEnabled(False)
             for p in sugg:
                 add.addAction(f"★ {p.name}", lambda pid=p.id: self.add_to_playlist(pid, paths))
             if create:
@@ -1151,27 +1199,42 @@ class LibraryView(QWidget):
         q = urllib.parse.quote_plus(f"{it.track.artist} {it.track.display_title}")
         webbrowser.open(f"https://www.mixesdb.com/w/index.php?search={q}")
 
-    def _suggest_playlists(self, sel):
-        """Playlisturile tale care se potrivesc piesei (aceeași familie, BPM în ±5), plus unul nou de creat."""
-        base = next((i for i in sel if i.family or i.bpm), None)
+    def _suggest_playlists(self, sel, col_key: str = ""):
+        """Sugestii după coloana pe care ai dat click dreapta:
+        Gen / Familie / Stil → familia; BPM → intervalul de 10; Rol → rolul. Altfel, nimic."""
+        base = sel[0] if sel else None
         if not base:
+            return [], ""
+        if col_key in ("family", "genre", "style"):
+            target = base.family
+            if not target:
+                return [], ""
+            match = lambda fam, bpm, role, name: fam == target or name.lower() == target.lower()  # noqa: E731
+            create = target
+        elif col_key == "bpm":
+            if not base.bpm:
+                return [], ""
+            lo, hi = ldb.bpm_bucket(base.bpm)
+            create = f"{lo}–{hi}"
+            match = lambda fam, bpm, role, name: (bpm and lo <= bpm < hi) or name.replace("-", "–") == create  # noqa: E731
+        elif col_key == "role":
+            target = base.role_or_suggestion
+            if not target:
+                return [], ""
+            match = lambda fam, bpm, role, name: role == target or name.lower() == target.lower()  # noqa: E731
+            create = target
+        else:
             return [], ""
         out = []
         for p in self.db.playlists:
-            if p.kind != "manual" or not p.tracks:
+            if p.kind != "manual":
                 continue
-            fam, bpm = ldb.playlist_profile(self._resolve(p.tracks))
-            fam_ok = not base.family or not fam or fam == base.family
-            bpm_ok = not base.bpm or not bpm or ldb._bpm_in(base.bpm, bpm - 5, bpm + 5)
-            if fam_ok and bpm_ok and (fam == base.family or (bpm and base.bpm)):
+            fam, bpm, role = ldb.playlist_profile(self._resolve(p.tracks)) if p.tracks else ("", 0, "")
+            if match(fam, bpm, role, p.name):
                 out.append(p)
-        create = ""
-        if base.bpm:
-            lo, hi = ldb.bpm_bucket(base.bpm)
-            create = f"{base.family + ' ' if base.family else ''}{lo}–{hi}"
-            if any(p.name.lower() == create.lower() for p in self.db.playlists):
-                create = ""
-        return out[:8], create
+        if any(p.name.lower() == create.lower() for p in self.db.playlists):
+            create = ""
+        return out[:10], create
 
     def show_mixable(self, it):
         self.mix_base = it
@@ -1236,6 +1299,21 @@ class LibraryView(QWidget):
         dlg.on_applied = self.reload
         dlg.setAttribute(Qt.WA_DeleteOnClose)
         dlg.show()          # nu blochează: poți lucra în alte taburi cât caută
+
+    def remove_danceability(self):
+        jobs = []
+        for it in self.items:
+            if it.missing or not ldb.has_junk_comment(it.track.comment):
+                continue
+            style, role, energy = ldb.parse_comment(it.track.comment)
+            jobs.append((it.path, {"comment": ldb.compose_comment(style, role, energy)}, None))
+        if not jobs:
+            QMessageBox.information(self, "Comentarii", "Nu am găsit „Danceability” în comentarii.")
+            return
+        if QMessageBox.question(self, "Comentarii", f"Șterg „Danceability” din Comentariul a {len(jobs)} fișiere? "
+                                "Stilul, rolul și energia rămân.") != QMessageBox.Yes:
+            return
+        write_tags_in_background(self, jobs, self.reload, "Șterg „Danceability”")
 
     def genre_cleanup(self):
         dlg = GenreCleanupDialog(self.items, self)

@@ -41,7 +41,7 @@ def clean_text(text: str, strip_track_numbers: bool = True) -> str:
 
 
 def plan_name_cleanup(tracks: list[Track], strip_track_numbers: bool = True) -> list[RenameItem]:
-    plan, taken = [], set()
+    plan, taken = [], {}
     for t in tracks:
         stem, ext = os.path.splitext(os.path.basename(t.path))
         new = safe_name(clean_text(stem, strip_track_numbers)) or stem
@@ -51,10 +51,13 @@ def plan_name_cleanup(tracks: list[Track], strip_track_numbers: bool = True) -> 
             continue
         key = os.path.normcase(dest)
         other_exists = os.path.exists(dest) and os.path.normcase(dest) != os.path.normcase(t.path)
-        if key in taken or other_exists:
-            plan.append(RenameItem(t.path, dest, "conflict"))
+        if key in taken:
+            plan.append(RenameItem(t.path, dest, "conflict", "același nume nou ca: " + taken[key]))
             continue
-        taken.add(key)
+        if other_exists:
+            plan.append(RenameItem(t.path, dest, "conflict", "există deja fișierul: " + dest))
+            continue
+        taken[key] = t.path
         plan.append(RenameItem(t.path, dest, "ok"))
     return plan
 
