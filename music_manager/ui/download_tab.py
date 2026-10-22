@@ -22,10 +22,12 @@ from ..core import library as lib
 from ..core import soulseek as slsk
 from ..core import sources as src
 from ..core import spotify as sp
+from ..core import youtube as yt
 from ..core.matching import Matcher, search_query
 from ..core.sources import PlaylistStore, SavedPlaylist, track_from_dict, track_to_dict
 from .common import AppState, Task, data_dir, fmt_duration, open_file, reveal_in_folder, settings
-from .settings_tab import download_dir, slsk_credentials, slsk_quality, spotify_client
+from .settings_tab import (download_dir, playlist_subfolders, slsk_credentials, slsk_quality,
+                           spotify_client)
 
 # stări (primele vin din core.sources.classify)
 HAVE, IGNORED, NOTFOUND, DELETED, OLD, MISSING = (src.HAVE, src.IGNORED, src.NOTFOUND, src.DELETED,
@@ -91,6 +93,14 @@ def _cell(text, editable=False, color=None, tooltip=None):
     return it
 
 
+def playlist_dir(p: SavedPlaylist | None) -> str:
+    """Folderul în care ajung piesele unui playlist (subfolder cu numele lui, dacă e activat)."""
+    base = download_dir()
+    if not base or not p or not playlist_subfolders():
+        return base
+    return os.path.join(base, lib.safe_name(p.name) or p.id)
+
+
 def open_search(site: str, track: sp.SpotifyTrack):
     q = urllib.parse.quote_plus(f"{track.main_artist} {slsk.pretty_title(track.title)}")
     webbrowser.open(SEARCH_SITES[site].format(q))
@@ -121,7 +131,7 @@ class DownloadRunner(QObject):
         self._running = False
         self.error.emit(msg)
 
-    def start(self, owner, items: list[slsk.DownloadItem], wide=False) -> bool:
+    def start(self, owner, items: list[slsk.DownloadItem], wide=False, length_tol=5) -> bool:
         if self.busy():
             QMessageBox.information(None, "Ocupat", "Se descarcă deja ceva. Așteaptă sau oprește descărcarea.")
             return False
@@ -148,7 +158,8 @@ class DownloadRunner(QObject):
                 if ev.kind in ("done", "failed"):
                     done[0] += 1
                 progress(done[0], len(items), json.dumps(asdict(ev)))
-            return slsk.run_download(items, out, user, pw, quality, exe, work, on_event, cancelled, wide=wide)
+            return slsk.run_download(items, out, user, pw, quality, exe, work, on_event, cancelled,
+                                     wide=wide, length_tol=length_tol)
 
         self.task = Task(work_fn, self)
         self.task.progress.connect(self._progress)
@@ -176,7 +187,7 @@ class DownloadRunner(QObject):
 class FirstCheckDialog(QDialog):
     """La prima verificare a unui playlist: ce descarc din ce lipsește?"""
 
-    def __init__(self, name: str, missing: int, oldest: datetime | None, parent=None):
+    def __init__(self, name: str, missing: int, oldest: datetime | None, parent=None, allow_since=True):
         super().__init__(parent)
         self.setWindowTitle("Prima verificare")
         lbl = QLabel(f"E prima verificare pentru <b>{name}</b>. Lipsesc <b>{missing}</b> piese.<br><br>"
@@ -200,6 +211,9 @@ class FirstCheckDialog(QDialog):
         row.addWidget(self.rb_since)
         row.addWidget(self.date)
         row.addStretch()
+        if not allow_since:      # YouTube nu spune când ai adăugat piesele
+            self.rb_since.setVisible(False)
+            self.date.setVisible(False)
         bb = QDialogButtonBox(QDialogButtonBox.Ok)
         bb.accepted.connect(self.accept)
         lay = QVBoxLayout(self)
@@ -227,7 +241,9 @@ class PlaylistButton(QFrame):
         super().__init__(parent)
         self.pid = p.id
         self.setFrameShape(QFrame.StyledPanel)
-        self.btn = QPushButton(p.name)
+        tag = "▶ YouTube" if p.source == "youtube" else "● Spotify"
+        self.btn = QPushButton(f"{p.name}")
+        self.btn.setToolTip(tag)
         self.btn.setStyleSheet("text-align:left; padding:6px 10px; font-weight:bold;")
         self.btn.setCheckable(True)
         self.btn.clicked.connect(lambda: self.clicked.emit(self.pid))
@@ -235,11 +251,13 @@ class PlaylistButton(QFrame):
         more.setText("⋯")
         more.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(more)
-        for label, key in (("Deschide în Spotify", "open"), ("Mută mai sus", "up"),
+        for label, key in (("Deschide pe YouTube" if p.source == "youtube" else "Deschide în Spotify", "open"),
+                           ("Deschide folderul", "folder"), ("Mută mai sus", "up"),
                            ("Mută mai jos", "down"), ("Scoate din listă", "remove")):
             menu.addAction(label, lambda k=key: self.action.emit(k, self.pid))
         more.setMenu(menu)
-        info = p.last_update_label
+        color = "#c4302b" if p.source == "youtube" else "#1db954"
+        info = f"<span style='color:{color}'>{tag}</span> · " + p.last_update_label
         if p.last_update:
             info += f"<br>{p.last_total} piese · {p.last_missing} lipsă"
             if p.last_downloaded:
@@ -297,7 +315,7 @@ class PlaylistsPanel(TrackTableBase):
 
         # --- stânga ---
         self.link = QLineEdit()
-        self.link.setPlaceholderText("Lipește linkul unui playlist Spotify…")
+        self.link.setPlaceholderText("Lipește linkul unui playlist Spotify sau YouTube…")
         self.link.returnPressed.connect(self.add_playlist)
         b_add = QPushButton("Adaugă")
         b_add.clicked.connect(self.add_playlist)
@@ -410,7 +428,7 @@ class PlaylistsPanel(TrackTableBase):
             self.buttons_box.addWidget(b)
         if not self.store.items:
             lbl = QLabel("Niciun playlist încă. Lipește mai sus linkul unui playlist Spotify "
-                         "(⋯ → Share → Copy link to playlist).")
+                         "(⋯ → Share → Copy link to playlist) sau YouTube.")
             lbl.setWordWrap(True)
             lbl.setStyleSheet("color: gray;")
             self.buttons_box.addWidget(lbl)
@@ -423,7 +441,13 @@ class PlaylistsPanel(TrackTableBase):
         if not p:
             return
         if key == "open":
-            webbrowser.open(p.url or f"https://open.spotify.com/playlist/{pid}")
+            webbrowser.open(p.web_url)
+        elif key == "folder":
+            d = playlist_dir(p)
+            if d and os.path.isdir(d):
+                open_file(d)
+            else:
+                QMessageBox.information(self, "Folder", "Folderul nu există încă (se creează la primul download).")
         elif key in ("up", "down"):
             self.store.move(pid, -1 if key == "up" else 1)
             self.refresh_buttons()
@@ -438,15 +462,18 @@ class PlaylistsPanel(TrackTableBase):
                 self.changed.emit()
 
     def add_playlist(self):
-        pid = sp.parse_playlist_id(self.link.text())
+        text = self.link.text()
+        source = "youtube" if yt.is_youtube(text) else "spotify"
+        pid = yt.parse_playlist_id(text) if source == "youtube" else sp.parse_playlist_id(text)
         if not pid:
-            QMessageBox.information(self, "Playlist", "Linkul nu pare a fi un playlist Spotify.\n"
-                                    "În Spotify: ⋯ → Share → Copy link to playlist.")
+            QMessageBox.information(self, "Playlist", "Linkul nu pare a fi un playlist Spotify sau YouTube.\n"
+                                    "Spotify: ⋯ → Share → Copy link to playlist.\n"
+                                    "YouTube: deschide playlistul și copiază adresa (conține „list=”).")
             return
-        url = self.link.text().strip()
+        url = text.strip()
         self.link.clear()
         if not self.store.get(pid):
-            self.store.add(SavedPlaylist(id=pid, name="(se încarcă…)", url=url))
+            self.store.add(SavedPlaylist(id=pid, name="(se încarcă…)", url=url, source=source))
             self.refresh_buttons()
         self.check(pid)
 
@@ -456,14 +483,17 @@ class PlaylistsPanel(TrackTableBase):
             QMessageBox.information(self, "Ocupat", "Aștept să se termine operația în curs.")
             self.refresh_buttons()
             return
-        client = spotify_client()
-        if not (client and client.logged_in):
-            QMessageBox.information(self, "Spotify", "Mai întâi conectează Spotify din tabul Setări.")
-            self.refresh_buttons()
-            return
         saved = self.store.get(pid)
         if not saved:
             return
+        is_yt = saved.source == "youtube"
+        client = None
+        if not is_yt:
+            client = spotify_client()
+            if not (client and client.logged_in):
+                QMessageBox.information(self, "Spotify", "Mai întâi conectează Spotify din tabul Setări.")
+                self.refresh_buttons()
+                return
         self.current = saved
         self.refresh_buttons()
         folders = [f for f in self.state.folders if os.path.isdir(f)]
@@ -479,14 +509,19 @@ class PlaylistsPanel(TrackTableBase):
             return
 
         def work(progress, cancelled):
-            progress(0, 0, "Citesc playlistul din Spotify…")
-            pl = client.get_playlist(pid, lambda d, t: progress(d, t, f"Citesc playlistul: {d}/{t}"))
+            if is_yt:
+                progress(0, 0, "Citesc playlistul de pe YouTube…")
+                pl = yt.fetch_playlist(saved.url or pid, lambda d, t: progress(d, t, f"Citesc playlistul: {d}/{t}"))
+            else:
+                progress(0, 0, "Citesc playlistul din Spotify…")
+                pl = client.get_playlist(pid, lambda d, t: progress(d, t, f"Citesc playlistul: {d}/{t}"))
             progress(0, 0, "Compar cu muzica ta…")
             cache = lib.LibraryCache(os.path.join(data_dir(), "biblioteca.json"))
             local = lib.scan(folders, cache, lambda d, t: progress(d, t, f"Verific fișierele: {d}/{t}"),
                              cancelled)
             matcher = Matcher(local)
-            return pl, {t.id: matcher.find(t) for t in pl.tracks}
+            tol = 15.0 if is_yt else 6.0      # pe YouTube clipurile au adesea intro/outro
+            return pl, {t.id: matcher.find(t, duration_tol=tol) for t in pl.tracks}
 
         self.task = Task(work, self)
         self.task.progress.connect(self.tab.show_progress)
@@ -512,6 +547,7 @@ class PlaylistsPanel(TrackTableBase):
             if t.id not in ids:
                 ids.add(t.id)
                 tracks.append(t)
+        saved.stamp_dates(tracks)
         for t in tracks:
             nf = saved.not_found.get(t.id)
             if nf is not None and not nf.get("track"):
@@ -525,7 +561,8 @@ class PlaylistsPanel(TrackTableBase):
             dates = [src._parse_dt(t.added_at) for t in tracks if t.added_at]
             dates = [d for d in dates if d]
             if missing:
-                dlg = FirstCheckDialog(saved.name, len(missing), min(dates) if dates else None, self)
+                dlg = FirstCheckDialog(saved.name, len(missing), min(dates) if dates else None, self,
+                                       allow_since=saved.source != "youtube")
                 dlg.exec()
                 saved.baseline = dlg.baseline()
             else:
@@ -721,8 +758,11 @@ class PlaylistsPanel(TrackTableBase):
         idx = self._checked_rows()
         if not idx or not self.current:
             return
-        items = [slsk.DownloadItem(self.rows[i].track, self.rows[i].artist_q, self.rows[i].title_q) for i in idx]
-        if not self.runner.start(self, items):
+        dest = playlist_dir(self.current)
+        items = [slsk.DownloadItem(self.rows[i].track, self.rows[i].artist_q, self.rows[i].title_q, dest)
+                 for i in idx]
+        tol = 20 if self.current.source == "youtube" else 5
+        if not self.runner.start(self, items, length_tol=tol):
             return
         self._dl_idx = idx
         self._dl_playlist = self.current
@@ -1063,10 +1103,12 @@ class NotFoundPanel(TrackTableBase):
             return
         with open(path, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["Playlist", "Artist", "Titlu", "Album", "Durata", "Motiv", "Spotify"])
+            w.writerow(["Playlist", "Artist", "Titlu", "Album", "Durata", "Motiv", "Link"])
             for r in self._lines():
+                p = self.store.get(r.playlist_id)
+                link = p.track_url(r.track.id) if p else ""
                 w.writerow([self._playlist_name(r.playlist_id), r.track.artist, r.track.title, r.track.album,
-                            fmt_duration(r.track.duration), r.detail, f"https://open.spotify.com/track/{r.track.id}"])
+                            fmt_duration(r.track.duration), r.detail, link])
 
     # --- reîncercare ---
     def retry(self, wide: bool):
@@ -1074,8 +1116,14 @@ class NotFoundPanel(TrackTableBase):
         if not idx:
             QMessageBox.information(self, "Negăsite", "Bifează piesele pe care vrei să le încerci din nou.")
             return
-        items = [slsk.DownloadItem(self.rows[i].track, self.rows[i].artist_q, self.rows[i].title_q) for i in idx]
-        if not self.runner.start(self, items, wide=wide):
+        items = []
+        any_yt = False
+        for i in idx:
+            p = self.store.get(self.rows[i].playlist_id)
+            any_yt = any_yt or bool(p and p.source == "youtube")
+            items.append(slsk.DownloadItem(self.rows[i].track, self.rows[i].artist_q, self.rows[i].title_q,
+                                           playlist_dir(p)))
+        if not self.runner.start(self, items, wide=wide, length_tol=20 if any_yt else 5):
             return
         self._dl_idx = idx
         for i in idx:

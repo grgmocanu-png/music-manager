@@ -2,7 +2,7 @@
 # Inno Setup face din el un installer obișnuit de Windows.
 import os
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 root = os.path.abspath(os.path.join(SPECPATH, ".."))
 
@@ -18,7 +18,7 @@ a = Analysis(
     pathex=[root],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["mutagen", "imageio_ffmpeg", "certifi"],
+    hiddenimports=["mutagen", "imageio_ffmpeg", "certifi"] + collect_submodules("yt_dlp.extractor.youtube"),
     excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
               "PySide6.Qt3DCore", "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtCharts",
               "PySide6.QtDataVisualization", "PySide6.QtMultimedia", "PySide6.QtPdf"],

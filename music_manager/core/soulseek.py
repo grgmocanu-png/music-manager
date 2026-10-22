@@ -53,6 +53,7 @@ class DownloadItem:
     track: SpotifyTrack
     artist_query: str = ""
     title_query: str = ""
+    dest_dir: str = ""        # unde ajunge fișierul (ex. subfolderul playlistului); gol = folderul de download
 
     def __post_init__(self):
         if not (self.artist_query or self.title_query):
@@ -264,7 +265,8 @@ STOP_NOW = "now"
 def run_download(items: list[DownloadItem], out_dir: str, username: str, password: str,
                  quality: str = "mp3_320", exe: str | None = None, work_dir: str | None = None,
                  on_event: Callable[[DownloadEvent], None] | None = None,
-                 cancelled: Callable[[], object] | None = None, wide: bool = False) -> DownloadSummary:
+                 cancelled: Callable[[], object] | None = None, wide: bool = False,
+                 length_tol: int = 5) -> DownloadSummary:
     """Rulează Sockseek și raportează evenimentele.
 
     cancelled() poate întoarce:
@@ -286,7 +288,7 @@ def run_download(items: list[DownloadItem], out_dir: str, username: str, passwor
     write_csv(csv_path, items)
     write_config(conf_path, username, password)
 
-    cmd = build_command(exe, csv_path, out_dir, conf_path, quality, wide=wide)
+    cmd = build_command(exe, csv_path, out_dir, conf_path, quality, length_tol=length_tol, wide=wide)
     kwargs = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
@@ -361,7 +363,9 @@ def run_download(items: list[DownloadItem], out_dir: str, username: str, passwor
                 try:
                     ev.path = _flatten_into(ev.path, out_dir)
                     if 0 <= ev.index < len(items) and os.path.exists(ev.path):
-                        ev.path = finalize_file(ev.path, items[ev.index].track, out_dir)
+                        dest = items[ev.index].dest_dir or out_dir
+                        os.makedirs(dest, exist_ok=True)
+                        ev.path = finalize_file(ev.path, items[ev.index].track, dest)
                 except OSError:
                     pass
                 summary.done.append((ev.index, ev.path))

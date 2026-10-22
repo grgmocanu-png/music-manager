@@ -45,6 +45,13 @@ def main() -> int:
     win = MainWindow()
     win.show()
     if os.environ.get("MM_SMOKE_TEST"):
+        # verificăm că bibliotecile încărcate „la nevoie” există și în aplicația împachetată
+        import mutagen  # noqa: F401
+        import yt_dlp
+        from .core.convert import ffmpeg_path
+        yt_dlp.YoutubeDL({"quiet": True})
+        if not ffmpeg_path():
+            return 3
         from PySide6.QtCore import QTimer
         QTimer.singleShot(1500, app.quit)
     return app.exec()

@@ -21,12 +21,30 @@ class SavedPlaylist:
     not_found: dict = field(default_factory=dict)          # id -> {reason, code, date, track}
     seen: list = field(default_factory=list)               # piese văzute vreodată la tine (sau descărcate)
     baseline: str = ""     # piesele adăugate în Spotify înainte de data asta nu se mai bifează automat
+    source: str = "spotify"                                # spotify | youtube
+    first_seen: dict = field(default_factory=dict)         # id -> data primei verificări (pt. YouTube)
 
     def __post_init__(self):
         # compatibilitate cu versiunea în care not_found era id -> text
         for k, v in list(self.not_found.items()):
             if isinstance(v, str):
                 self.not_found[k] = {"reason": v, "code": "", "date": "", "track": None}
+
+    def stamp_dates(self, tracks) -> None:
+        """YouTube nu spune când ai adăugat o piesă; folosim data la care am văzut-o prima oară."""
+        now = datetime.now().isoformat(timespec="minutes")
+        for t in tracks:
+            if not t.added_at:
+                t.added_at = self.first_seen.setdefault(t.id, now)
+
+    @property
+    def web_url(self) -> str:
+        if self.source == "youtube":
+            return self.url or f"https://www.youtube.com/playlist?list={self.id}"
+        return self.url or f"https://open.spotify.com/playlist/{self.id}"
+
+    def track_url(self, tid: str) -> str:
+        return f"https://youtu.be/{tid}" if self.source == "youtube" else f"https://open.spotify.com/track/{tid}"
 
     def mark_seen(self, ids) -> None:
         s = set(self.seen)

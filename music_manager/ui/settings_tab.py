@@ -8,7 +8,7 @@ import webbrowser
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -34,6 +34,11 @@ def spotify_client() -> sp.SpotifyClient | None:
 
 def download_dir() -> str:
     return settings().value("download/dir", "") or ""
+
+
+def playlist_subfolders() -> bool:
+    v = settings().value("download/subfolders", True)
+    return v not in (False, "false", "0", 0)
 
 
 def slsk_credentials() -> tuple[str, str]:
@@ -133,6 +138,10 @@ class SettingsTab(QWidget):
         drow.setContentsMargins(0, 0, 0, 0)
         fl.addRow("Folder de download:", dw)
         fl.addRow("", QLabel("Piesele noi ajung aici. Recomandat: un folder „_unsorted” în folderul tău de mix."))
+        self.subfolders = QCheckBox("Fiecare playlist în subfolderul lui (ex. _unsorted\\Numele playlistului)")
+        self.subfolders.setChecked(playlist_subfolders())
+        self.subfolders.toggled.connect(lambda v: settings().setValue("download/subfolders", bool(v)))
+        fl.addRow("", self.subfolders)
         fl.addRow("Sockseek (avansat):", self.ss_path)
         fl.addRow("", self.ss_status)
         note = QLabel("Parola se păstrează doar pe acest calculator, în setările aplicației.")
