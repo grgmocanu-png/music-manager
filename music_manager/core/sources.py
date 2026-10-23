@@ -26,6 +26,25 @@ class SavedPlaylist:
     last_rows: list = field(default_factory=list)          # rezultatul ultimei verificări (afișat la click)
     files: dict = field(default_factory=dict)              # id -> fișierul descărcat / confirmat de tine
     rejected: dict = field(default_factory=dict)           # id -> fișiere despre care ai zis „nu e piesa mea”
+    removed: dict = field(default_factory=dict)            # id -> {track, path, date}: scoase din playlistul online
+
+    def note_removed(self, current_ids, when: str) -> list[str]:
+        """Compară cu verificarea anterioară: piesele care nu mai sunt în playlist și au fișier la tine."""
+        cur = set(current_ids)
+        out = []
+        for r in self.last_rows or []:
+            t = r.get("t") or {}
+            tid = t.get("id", "")
+            if not tid or tid in cur or tid in self.removed:
+                continue
+            path = r.get("p") or self.files.get(tid, "")
+            if path:
+                self.removed[tid] = {"track": t, "path": path, "date": when}
+                out.append(tid)
+        for tid in list(self.removed):     # a fost pusă înapoi în playlist
+            if tid in cur:
+                self.removed.pop(tid, None)
+        return out
 
     def link(self, tid: str, path: str) -> None:
         if tid and path:

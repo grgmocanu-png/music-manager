@@ -230,3 +230,62 @@ class FindInLibraryDialog(QDialog):
             return
         self.chosen = self.found[rows[0].row()]
         self.accept()
+
+
+class TraktorChangesDialog(QDialog):
+    """La pornire: ce ai schimbat în Traktor de data trecută (BPM, Key, Rating), cu „Scrie în fișiere”."""
+
+    LABELS = {"bpm": "BPM", "key": "Key", "rating": "Rating"}
+
+    def __init__(self, changes, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Schimbări din Traktor")
+        self.resize(860, 480)
+        self.changes = changes
+        self.on_write = None
+        info = QLabel(f"De la ultima deschidere ai schimbat în Traktor <b>{len(changes)}</b> valori. Manager-ul le "
+                      "folosește deja (cea mai nouă schimbare câștigă). Cu „Scrie în fișiere” ajung și în tagurile "
+                      "fișierelor, ca să le vadă Rekordbox / CDJ-urile.")
+        info.setWordWrap(True)
+        self.table = _table(["", "Piesă", "Ce", "Înainte", "Acum"], (28, 380, 70, 90))
+        add_space_toggle(self.table, 0)
+        self.table.setRowCount(len(changes))
+        for i, (path, field, a, b) in enumerate(changes):
+            self.table.setItem(i, 0, _item("", check=True))
+            self.table.setItem(i, 1, _item(os.path.basename(path), tooltip=path))
+            self.table.setItem(i, 2, _item(self.LABELS.get(field, field)))
+            self.table.setItem(i, 3, _item(self._fmt(field, a), "gray"))
+            note = ""
+            if field == "bpm" and a and b:
+                r = float(b) / float(a) if float(a) else 0
+                note = "  (dublat)" if abs(r - 2) < 0.05 else ("  (înjumătățit)" if abs(r - 0.5) < 0.02 else "")
+            self.table.setItem(i, 4, _item(self._fmt(field, b) + note, "#27ae60"))
+        bb = QDialogButtonBox()
+        b_write = bb.addButton("Scrie bifatele în fișiere", QDialogButtonBox.AcceptRole)
+        bb.addButton("Închide", QDialogButtonBox.RejectRole)
+        b_write.clicked.connect(self.write)
+        bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addWidget(info)
+        lay.addWidget(self.table, 1)
+        lay.addWidget(bb)
+
+    @staticmethod
+    def _fmt(field, v):
+        if field == "rating":
+            return "★" * int(v or 0) or "—"
+        if field == "bpm":
+            return f"{float(v):g}" if v else "—"
+        return str(v or "—")
+
+    def write(self):
+        per: dict = {}
+        for i, (path, field, _a, b) in enumerate(self.changes):
+            if self.table.item(i, 0).checkState() != Qt.Checked or b in ("", None):
+                continue
+            f = per.setdefault(path, {})
+            f[field] = str(int(round(float(b)))) if field == "bpm" else str(b)
+        jobs = [(p, f, None) for p, f in per.items()]
+        if jobs and self.on_write:
+            self.on_write(jobs)
+        self.accept()

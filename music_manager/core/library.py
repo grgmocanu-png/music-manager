@@ -194,6 +194,16 @@ def normalize(text: str) -> str:
     return " ".join(text.split())
 
 
+def artist_title_from_filename(t: Track) -> tuple[str, str]:
+    """Artistul și titlul din numele fișierului („04. Artist - Titlu (Remix).wav”), cu literele originale."""
+    stem = os.path.splitext(t.filename)[0].replace("_", " ")
+    stem = re.sub(r"^\s*\d{1,3}(?:\s*[.)\-–]+\s*|\s+)", "", stem)
+    if " - " not in stem:
+        return "", ""
+    a, b = stem.split(" - ", 1)
+    return " ".join(a.split()), " ".join(b.split())
+
+
 def _identity(t: Track) -> tuple[str, str] | None:
     artist, title = t.artist, t.title
     if not (artist and title):

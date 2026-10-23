@@ -160,6 +160,7 @@ class LibItem:
     avg_pos: float = -1
     analyzed: str = ""
     an_error: str = ""
+    bpm_suggest: float = 0.0      # BPM-ul pare greșit pentru familie: dublul / jumătatea s-ar potrivi
 
     @property
     def path(self) -> str:
@@ -675,6 +676,58 @@ def playlist_profile(items: list[LibItem]) -> tuple[str, float, str]:
     bpms = sorted(it.bpm for it in items if it.bpm)
     return (top(it.family for it in items), (bpms[len(bpms) // 2] if bpms else 0.0),
             top(it.role for it in items))
+
+
+# intervale tipice pe familie — folosite DOAR ca să marcheze „BPM de verificat”, niciodată la playlisturi
+DEFAULT_BPM_RANGES = {
+    "House": (115, 130), "Techno": (125, 150), "Disco": (110, 128), "Funk & Soul": (90, 125),
+    "Drum & Bass": (160, 180), "Hip-Hop": (80, 100), "Electro": (115, 140), "Trance": (128, 145),
+    "Breaks": (120, 140),
+}
+
+
+def bpm_suggestion(bpm: float, family: str, ranges: dict | None = None) -> float:
+    """Dacă BPM-ul e în afara intervalului familiei, dar dublul sau jumătatea intră: acela. Altfel 0."""
+    ranges = DEFAULT_BPM_RANGES if ranges is None else ranges
+    if not bpm or not family or family not in ranges:
+        return 0.0
+    lo, hi = ranges[family]
+    if lo <= bpm <= hi:
+        return 0.0
+    for cand in (bpm * 2, bpm / 2):
+        if lo <= cand <= hi:
+            return round(cand, 2)
+    return 0.0
+
+
+def traktor_snapshot(collections) -> dict:
+    """BPM / Key / Rating din colecția Traktor, pe cale: {cale: [bpm, key, rating]}."""
+    tk = next((c for c in collections if c.source == "Traktor" and not c.error), None)
+    if tk is None:
+        return {}
+    return {k: [round(float(v.bpm or 0), 2), v.key or "", int(v.rating or 0)] for k, v in tk.tracks.items()}
+
+
+def diff_snapshot(old: dict, new: dict) -> list[tuple[str, str, object, object]]:
+    """[(cale, câmp, vechi, nou)] pentru piesele schimbate în Traktor de la ultima încărcare."""
+    out = []
+    if not old:
+        return out
+    names = ("bpm", "key", "rating")
+    for k, vals in new.items():
+        prev = old.get(k)
+        if prev is None:
+            continue
+        for i, n in enumerate(names):
+            a, b = prev[i], vals[i]
+            if n == "bpm":
+                if a and b and abs(float(a) - float(b)) < 0.05:
+                    continue
+                if not b:
+                    continue
+            if a != b and not (n != "bpm" and not b and not a):
+                out.append((k, n, a, b))
+    return out
 
 
 def top_value(items: list, fn) -> str:

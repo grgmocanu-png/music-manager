@@ -6,7 +6,7 @@ import os
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QPushButton, QSlider, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
+    QComboBox, QHBoxLayout, QLabel, QPushButton, QSlider, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .common import fmt_duration, settings
@@ -158,8 +158,24 @@ class PlayerPanel(QWidget):
         self.b_next.setText("⏭")
         for b in (self.b_prev, self.b_play, self.b_next):
             b.setMinimumSize(34, 30)
-        self.b_drop = QPushButton("Sari la drop")
-        self.b_drop.setToolTip("Sare la următorul loc marcat „drop?”")
+        # tempo: slider + Normal/Wide + BPM-ul rezultat (dublu-click pe slider = înapoi la original)
+        self.base_bpm = 0.0
+        self.tempo = QSlider(Qt.Horizontal)
+        self.tempo.setRange(-1000, 1000)
+        self.tempo.setValue(0)
+        self.tempo.setFixedWidth(170)
+        self.tempo.setToolTip("Viteza de redare. Dublu-click: înapoi la BPM-ul original.")
+        self.tempo.mouseDoubleClickEvent = lambda e: self.tempo.setValue(0)
+        self.tempo_range = QComboBox()
+        self.tempo_range.addItem("Normal", 0.08)
+        self.tempo_range.addItem("Wide", 0.16)
+        i = self.tempo_range.findText(settings().value("player/tempo_range", "Normal") or "Normal")
+        self.tempo_range.setCurrentIndex(max(0, i))
+        self.bpm_lbl = QLabel("")
+        self.bpm_lbl.setMinimumWidth(80)
+        self.bpm_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.tempo.valueChanged.connect(self._tempo_changed)
+        self.tempo_range.currentIndexChanged.connect(self._range_changed)
         self.vol = QSlider(Qt.Horizontal)
         self.vol.setRange(0, 100)
         self.vol.setMaximumWidth(110)
@@ -182,8 +198,12 @@ class PlayerPanel(QWidget):
         tl.addWidget(self.title)
         tl.addWidget(self.info)
         top.addLayout(tl, 1)
-        top.addWidget(self.b_drop)
         top.addWidget(self.time)
+        top.addSpacing(10)
+        top.addWidget(self.tempo)
+        top.addWidget(self.tempo_range)
+        top.addWidget(self.bpm_lbl)
+        top.addSpacing(10)
         top.addWidget(QLabel("🔊"))
         top.addWidget(self.vol)
 
@@ -209,7 +229,6 @@ class PlayerPanel(QWidget):
         self.b_play.clicked.connect(self.toggle)
         self.b_prev.clicked.connect(lambda: self.request_next.emit(-1))
         self.b_next.clicked.connect(lambda: self.request_next.emit(1))
-        self.b_drop.clicked.connect(self.jump_drop)
         self.vol.valueChanged.connect(self._volume)
         self.wave.seek.connect(self.seek_frac)
 
@@ -218,13 +237,69 @@ class PlayerPanel(QWidget):
         if self.player:
             self.audio.setVolume(v / 100)
 
-    def load(self, path: str, title: str, info: str, duration: float, analysis=None, autoplay=True):
+    # --- tempo ---
+    def rate(self) -> float:
+        return 1.0 + self.tempo.value() / 1000 * (self.tempo_range.currentData() or 0.08)
+
+    def _tempo_changed(self, _v=None):
+        if self.player:
+            self.player.setPlaybackRate(self.rate())
+        self.bpm_lbl.setText(f"{self.base_bpm * self.rate():.1f} BPM" if self.base_bpm else "")
+
+    def _range_changed(self, _i):
+        settings().setValue("player/tempo_range", self.tempo_range.currentText())
+        self._tempo_changed()
+
+    def set_bpm(self, bpm: float):
+        self.base_bpm = float(bpm or 0)
+        self._tempo_changed()
+
+    # --- taste (aceleași peste tot) ---
+    def is_playing(self) -> bool:
+        return bool(self.player and self.player.playbackState() == QMediaPlayer.PlayingState)
+
+    def seek_rel(self, sec: float):
+        if self.player and self.path:
+            dur = (self.duration or 0) * 1000
+            pos = max(0, self.player.position() + int(sec * 1000))
+            self.player.setPosition(int(min(pos, dur - 500) if dur else pos))
+
+    def seek_abs(self, frac: float):
+        if self.player and self.path and self.duration:
+            self.player.setPosition(int(frac * self.duration * 1000))
+
+    def handle_key(self, e) -> bool:
+        """←/→ 5 s · Shift+←/→ 30 s · Shift de două ori: jumătatea piesei · B: început. True = tasta a fost folosită."""
+        import time as _t
+        k, mod = e.key(), e.modifiers()
+        if k in (Qt.Key_Left, Qt.Key_Right) and not mod & (Qt.ControlModifier | Qt.AltModifier):
+            step = 30 if mod & Qt.ShiftModifier else 5
+            self.seek_rel(step if k == Qt.Key_Right else -step)
+            return True
+        if k == Qt.Key_B and not mod & (Qt.ControlModifier | Qt.AltModifier):
+            self.seek_abs(0)
+            return True
+        if k == Qt.Key_Shift and not e.isAutoRepeat():
+            now = _t.monotonic()
+            if now - getattr(self, "_last_shift", 0) < 0.4:
+                self.seek_abs(0.5)
+                self._last_shift = 0
+            else:
+                self._last_shift = now
+            return True
+        return False
+
+    def load(self, path: str, title: str, info: str, duration: float, analysis=None, autoplay=True, bpm=0.0):
         self.path = path
+        self.tempo.blockSignals(True)
+        self.tempo.setValue(0)              # piesă nouă: înapoi la BPM-ul ei original
+        self.tempo.blockSignals(False)
+        self.base_bpm = float(bpm or 0)
+        self._tempo_changed()
         self.duration = duration
         self.title.setText(title)
         self.info.setText(info)
         self.wave.set_data(analysis, duration)
-        self.b_drop.setEnabled(bool(analysis and getattr(analysis, "drops", None)))
         self._show_cover(path)
         if self.player:
             self.player.setSource(QUrl.fromLocalFile(path))
@@ -253,7 +328,6 @@ class PlayerPanel(QWidget):
 
     def set_analysis(self, analysis):
         self.wave.set_data(analysis, self.duration or getattr(analysis, "duration", 0))
-        self.b_drop.setEnabled(bool(analysis and analysis.drops))
         if self.player and self.duration:
             self.wave.set_position(self.player.position() / 1000 / self.duration)
 

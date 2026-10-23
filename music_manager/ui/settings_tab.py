@@ -30,7 +30,23 @@ def spotify_client() -> sp.SpotifyClient | None:
     def save(tok):
         settings().setValue("spotify/tokens", json.dumps(tok))
 
-    return sp.SpotifyClient(cid, tokens, on_tokens=save)
+    return sp.SpotifyClient(cid, tokens, on_tokens=save, redirect_port=spotify_port(),
+                            redirect_path=spotify_path())
+
+
+def spotify_port() -> int:
+    try:
+        return int(settings().value("spotify/port", sp.REDIRECT_PORT) or sp.REDIRECT_PORT)
+    except (TypeError, ValueError):
+        return sp.REDIRECT_PORT
+
+
+def spotify_path() -> str:
+    return (settings().value("spotify/path", "callback") or "callback").strip().strip("/") or "callback"
+
+
+def spotify_redirect() -> str:
+    return sp.make_redirect_uri(spotify_port(), spotify_path())
 
 
 def download_dir() -> str:
@@ -57,8 +73,8 @@ SPOTIFY_HELP = f"""
 <li>Intră pe <a href="https://developer.spotify.com/dashboard">developer.spotify.com/dashboard</a>
 și loghează-te cu contul tău de Spotify (cel cu Premium).</li>
 <li>Apasă <b>Create app</b>. La <i>App name</i> și <i>Description</i> scrie ce vrei (ex. „Music Manager”).</li>
-<li>La <b>Redirect URIs</b> lipește exact: <code>{sp.REDIRECT_URI}</code> și apasă <b>Add</b>
-(butonul „Copiază” de mai jos o pune în clipboard).</li>
+<li>La <b>Redirect URIs</b> lipește exact adresa de mai jos (butonul „Copiază” o pune în clipboard)
+și apasă <b>Add</b>. Dacă portul e ocupat pe un calculator, schimbă-l aici și adaugă și adresa nouă.</li>
 <li>La <i>Which API/SDKs</i> bifează <b>Web API</b>, acceptă termenii și apasă <b>Save</b>.</li>
 <li>Pe pagina aplicației apasă <b>Settings</b>, copiază <b>Client ID</b> și lipește-l mai jos.</li>
 <li>Apasă <b>Conectează-te la Spotify</b> și acceptă în browser.</li>
@@ -80,8 +96,28 @@ class SettingsTab(QWidget):
         help_lbl.setWordWrap(True)
         help_lbl.setOpenExternalLinks(True)
         help_lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        b_copy = QPushButton("Copiază Redirect URI")
-        b_copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(sp.REDIRECT_URI))
+        b_copy = QPushButton("Copiază")
+        b_copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(spotify_redirect()))
+        self.sp_port = QSpinBox()
+        self.sp_port.setRange(1024, 65535)
+        self.sp_port.setValue(spotify_port())
+        self.sp_port.setButtonSymbols(QSpinBox.NoButtons)
+        self.sp_port.setFixedWidth(70)
+        self.sp_path = QLineEdit(spotify_path())
+        self.sp_path.setFixedWidth(120)
+        self.sp_port.valueChanged.connect(lambda v: settings().setValue("spotify/port", int(v)))
+        self.sp_path.editingFinished.connect(
+            lambda: (settings().setValue("spotify/path", self.sp_path.text().strip().strip("/") or "callback"),
+                     self.sp_path.setText(spotify_path())))
+        uri_row = QHBoxLayout()
+        prefix = QLabel(sp.REDIRECT_PREFIX)
+        prefix.setStyleSheet("color: gray;")
+        uri_row.addWidget(prefix)
+        uri_row.addWidget(self.sp_port)
+        uri_row.addWidget(QLabel("/"))
+        uri_row.addWidget(self.sp_path)
+        uri_row.addWidget(b_copy)
+        uri_row.addStretch()
         self.client_id = QLineEdit(settings().value("spotify/client_id", "") or "")
         self.client_id.setPlaceholderText("ex. 3f1b2c… (32 de caractere)")
         self.client_id.editingFinished.connect(self._save_client_id)
@@ -94,8 +130,8 @@ class SettingsTab(QWidget):
         sp_box = QGroupBox("Spotify")
         sl = QVBoxLayout(sp_box)
         sl.addWidget(help_lbl)
-        sl.addWidget(b_copy, 0, Qt.AlignLeft)
         f = QFormLayout()
+        f.addRow("Redirect URI:", uri_row)
         f.addRow("Client ID:", self.client_id)
         sl.addLayout(f)
         r = QHBoxLayout()
@@ -260,7 +296,7 @@ class SettingsTab(QWidget):
         self._refresh()
         QMessageBox.warning(self, "Spotify", f"Conectarea nu a reușit:\n{msg}\n\n"
                             "Verifică dacă Redirect URI din aplicația de dezvoltator e exact "
-                            f"{sp.REDIRECT_URI}")
+                            f"{spotify_redirect()}")
 
     def logout(self):
         settings().setValue("spotify/tokens", "{}")
@@ -358,7 +394,48 @@ class SettingsTab(QWidget):
         f.addRow("Familii:", self.fam_label)
         f.addRow("", b_fam)
         f.addRow("", note)
+        # intervale BPM pe familie (doar pentru „BPM de verificat”)
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+        from .library_view import bpm_ranges
+        ranges = bpm_ranges()
+        names = list(dict.fromkeys(list(ranges) + families()))
+        self.bpm_tbl = QTableWidget(len(names), 3)
+        self.bpm_tbl.setHorizontalHeaderLabels(["Familie", "BPM minim", "BPM maxim"])
+        self.bpm_tbl.verticalHeader().setVisible(False)
+        for i, n in enumerate(names):
+            lo, hi = ranges.get(n, ("", ""))
+            it = QTableWidgetItem(n)
+            it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+            self.bpm_tbl.setItem(i, 0, it)
+            self.bpm_tbl.setItem(i, 1, QTableWidgetItem(f"{lo:g}" if lo != "" else ""))
+            self.bpm_tbl.setItem(i, 2, QTableWidgetItem(f"{hi:g}" if hi != "" else ""))
+        self.bpm_tbl.setMinimumHeight(220)
+        self.bpm_tbl.itemChanged.connect(self._save_bpm_ranges)
+        note2 = QLabel("Intervalele sunt folosite DOAR ca să marcheze în Bibliotecă „BPM de verificat” (când dublul "
+                       "sau jumătatea s-ar potrivi mai bine). Nu se folosesc la playlisturi. Gol = familia nu se verifică.")
+        note2.setWordWrap(True)
+        note2.setStyleSheet("color: gray;")
+        f.addRow("Intervale BPM:", self.bpm_tbl)
+        f.addRow("", note2)
         return box
+
+    def _theme_changed(self, _i):
+        from PySide6.QtWidgets import QApplication
+        from .theme import apply_theme
+        settings().setValue("ui/theme", self.theme.currentData())
+        apply_theme(QApplication.instance(), self.theme.currentData())
+
+    def _save_bpm_ranges(self, *_):
+        out = {}
+        for i in range(self.bpm_tbl.rowCount()):
+            try:
+                lo = float(self.bpm_tbl.item(i, 1).text().replace(",", "."))
+                hi = float(self.bpm_tbl.item(i, 2).text().replace(",", "."))
+            except (AttributeError, ValueError):
+                continue
+            if 40 <= lo < hi <= 250:
+                out[self.bpm_tbl.item(i, 0).text()] = [lo, hi]
+        settings().setValue("genres/bpm_ranges", json.dumps(out))
 
     def _edit_genres(self):
         from .dialogs import StyleMapDialog, families
@@ -407,6 +484,12 @@ class SettingsTab(QWidget):
         f.addRow("", self._gray("Primul din listă câștigă. „Fișier” = ce e scris în tag (Serato, Mixed In Key); "
                                 "„Analiză” = analiza făcută de aplicație."))
 
+        self.theme = QComboBox()
+        self.theme.addItem("Întunecată", "dark")
+        self.theme.addItem("Deschisă", "light")
+        self.theme.setCurrentIndex(0 if (settings().value("ui/theme", "dark") or "dark") == "dark" else 1)
+        self.theme.currentIndexChanged.connect(self._theme_changed)
+        f.addRow("Temă:", self.theme)
         self.auto_an = QCheckBox("Analizează automat piesele neanalizate la fiecare deschidere a Bibliotecii (BPM, tonalitate, waveform)")
         self.auto_an.setChecked(settings().value("library/auto_analyze2", False) in (True, "true"))
         self.auto_an.toggled.connect(lambda v: settings().setValue("library/auto_analyze2", bool(v)))

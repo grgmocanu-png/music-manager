@@ -99,3 +99,18 @@ def test_clear_comment(tmp_path):
     tagmod.write_tags(p, {**cur, "comment": ""}, None, ("comment",))
     f = tagmod.read_tags(p).fields
     assert f["comment"] == "" and f["artist"] == "A"
+
+
+def test_cover_normalize_and_rating(tmp_path):
+    from music_manager.core.covers import normalize_cover
+    png = tmp_path / "c.png"
+    subprocess.run([FFMPEG, "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=1200x900",
+                    "-frames:v", "1", str(png)], check=True)
+    out = normalize_cover(png.read_bytes())
+    assert out and out[1] == "image/jpeg" and out[0][:3] == b"\xff\xd8\xff"
+    assert normalize_cover(b"not an image") is None
+    p = make(tmp_path / "r.mp3", ["-c:a", "libmp3lame"])
+    tagmod.write_tags(p, {"artist": "A", "rating": "4"}, out)
+    from mutagen.id3 import ID3
+    t = ID3(p)
+    assert t.getall("POPM")[0].rating == 196 and t.getall("APIC")[0].mime == "image/jpeg"

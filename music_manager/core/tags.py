@@ -185,10 +185,11 @@ def write_tags(path: str, fields: dict, cover: tuple | None = None, clear: tuple
     Serato, Traktor și playerele mai vechi).
     """
     import mutagen
-    from mutagen.id3 import ID3, APIC, COMM, Frames
+    from mutagen.id3 import ID3, APIC, COMM, POPM, Frames
     from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
     from mutagen.flac import FLAC, Picture
 
+    rating = str(fields.get("rating", "") or "").strip()      # 0..5 stele (POPM / RATING)
     fields = {k: v for k, v in _clean(fields).items() if v}
     clear = tuple(c for c in clear if c not in fields)
     ext = os.path.splitext(path)[1].lower()
@@ -207,6 +208,10 @@ def write_tags(path: str, fields: dict, cover: tuple | None = None, clear: tuple
         if "comment" in fields:
             tags.delall("COMM")
             tags.add(COMM(encoding=3, lang="eng", desc="", text=[fields["comment"]]))
+        if rating.isdigit():
+            n = max(0, min(5, int(rating)))
+            tags.delall("POPM:MusicManager")
+            tags.add(POPM(email="MusicManager", rating=[0, 1, 64, 128, 196, 255][n], count=0))
         if cover:
             tags.delall("APIC")
             tags.add(APIC(encoding=3, mime=cover[1], type=3, desc="Cover", data=cover[0]))
@@ -223,6 +228,8 @@ def write_tags(path: str, fields: dict, cover: tuple | None = None, clear: tuple
         for name, keys in _VORBIS_KEYS.items():
             if name in fields:
                 audio[keys[0]] = fields[name]
+        if rating.isdigit():
+            audio["rating"] = str(max(0, min(5, int(rating))) * 20)
         for c in clear:
             for k in _VORBIS_KEYS.get(c, []):
                 if k in audio:

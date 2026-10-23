@@ -645,6 +645,7 @@ class PlaylistsPanel(TrackTableBase):
                 ids.add(t.id)
                 tracks.append(t)
         saved.stamp_dates(tracks)
+        saved.note_removed([t.id for t in tracks], datetime.now().isoformat(timespec="minutes"))
         for t in tracks:
             nf = saved.not_found.get(t.id)
             if nf is not None and not nf.get("track"):
@@ -962,6 +963,127 @@ class PlaylistsPanel(TrackTableBase):
 
 
 # --------------------------------------------------------------------------
+class RemovedPanel(TrackTableBase):
+    """Piesele pe care le-ai scos din playlisturile online (Spotify / YouTube) și care au fișier la tine."""
+
+    def __init__(self, tab, parent=None):
+        super().__init__(parent)
+        self.tab = tab
+        self.store: PlaylistStore = tab.store
+        self.rows: list[tuple] = []        # (playlist, id, info)
+        info = QLabel("Piese scoase din playlisturile tale online de la ultima verificare, pentru care ai fișier. "
+                      "Le poți asculta, le poți trimite în Coș sau le poți păstra (dispar doar din listă).")
+        info.setWordWrap(True)
+        self.table = self._make_table(["", "Playlist", "Artist", "Titlu", "Scoasă la", "Fișier"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        for c, w in ((0, 28), (1, 130), (2, 170), (3, 230), (4, 120)):
+            self.table.setColumnWidth(c, w)
+        add_space_toggle(self.table, 0)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._menu)
+        self.table.doubleClicked.connect(lambda idx: self._open(idx.row()))
+        b_trash = QPushButton("Trimite bifatele în Coș")
+        b_trash.clicked.connect(self.trash_checked)
+        b_keep = QPushButton("Păstrez fișierele bifate")
+        b_keep.clicked.connect(self.keep_checked)
+        row = QHBoxLayout()
+        row.addWidget(b_trash)
+        row.addWidget(b_keep)
+        row.addStretch()
+        lay = QVBoxLayout(self)
+        lay.addWidget(info)
+        lay.addWidget(self.table, 1)
+        lay.addLayout(row)
+        self.reload()
+
+    def reload(self):
+        self.rows = []
+        for p in self.store.items:
+            for tid, inf in (p.removed or {}).items():
+                self.rows.append((p, tid, inf))
+        self.rows.sort(key=lambda r: r[2].get("date", ""), reverse=True)
+        self.table.setRowCount(len(self.rows))
+        for i, (p, tid, inf) in enumerate(self.rows):
+            t = inf.get("track") or {}
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            chk.setCheckState(Qt.Unchecked)
+            self.table.setItem(i, 0, chk)
+            path = inf.get("path", "")
+            exists = bool(path) and os.path.exists(path)
+            for c, txt in ((1, p.name), (2, ", ".join(t.get("artists") or [])), (3, t.get("title", "")),
+                           (4, (inf.get("date") or "")[:16].replace("T", " ")),
+                           (5, path if exists else f"{path}  (nu mai există)")):
+                self.table.setItem(i, c, _cell(txt, color=None if exists or c != 5 else "#888888"))
+        if hasattr(self.tab, "inner"):
+            idx = self.tab.inner.indexOf(self)
+            self.tab.inner.setTabText(idx, f"Scoase din playlist ({len(self.rows)})" if self.rows
+                                      else "Scoase din playlist")
+
+    def _checked(self) -> list[int]:
+        return [i for i in range(self.table.rowCount()) if self.table.item(i, 0).checkState() == Qt.Checked]
+
+    def _open(self, i):
+        if 0 <= i < len(self.rows) and os.path.exists(self.rows[i][2].get("path", "")):
+            open_file(self.rows[i][2]["path"])
+
+    def _menu(self, pos):
+        i = self.table.rowAt(pos.y())
+        if i < 0 or i >= len(self.rows):
+            return
+        path = self.rows[i][2].get("path", "")
+        m = QMenu(self)
+        m.addAction("▶ Ascultă", lambda: self._open(i))
+        m.addAction(reveal_label(), lambda: reveal_in_folder(path))
+        m.addSeparator()
+        m.addAction("Trimite în Coș", lambda: self._trash([i]))
+        m.addAction("Păstrez fișierul", lambda: self._keep([i]))
+        m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _keep(self, idx):
+        for i in idx:
+            p, tid, _ = self.rows[i]
+            p.removed.pop(tid, None)
+        self.store.save()
+        self.reload()
+
+    def keep_checked(self):
+        idx = self._checked()
+        if idx:
+            self._keep(idx)
+
+    def trash_checked(self):
+        idx = self._checked()
+        if not idx:
+            QMessageBox.information(self, "Scoase din playlist", "Bifează piesele (click pe căsuță sau Space).")
+            return
+        self._trash(idx)
+
+    def _trash(self, idx):
+        from ..core.library import move_to_duplicates
+        from ..core.trash import split_by_bin, to_trash
+        from .common import after_moves, undo_dir
+        paths = [self.rows[i][2].get("path", "") for i in idx]
+        paths = [p for p in paths if p and os.path.exists(p)]
+        if paths and QMessageBox.question(self, "Coș", f"Trimit {len(paths)} fișiere în Coșul de gunoi? "
+                                          "(Pe discurile fără Coș le mut în „_Dubluri”.)") != QMessageBox.Yes:
+            return
+        ok, no_bin = split_by_bin(paths)
+        done, errors = to_trash(ok)
+        moved, err2 = move_to_duplicates(no_bin, undo_dir()) if no_bin else ([], [])
+        after_moves(moved)
+        for i in idx:
+            p, tid, inf = self.rows[i]
+            if inf.get("path") in done or any(a == inf.get("path") for a, _b in moved) or \
+                    not os.path.exists(inf.get("path", "")):
+                p.removed.pop(tid, None)
+                p.files.pop(tid, None)
+        self.store.save()
+        self.reload()
+        if errors or err2:
+            QMessageBox.warning(self, "Coș", "\n".join((errors + err2)[:15]))
+
+
 N_CHECK, N_PL, N_ARTIST, N_TITLE, N_REASON, N_DATE, N_QA, N_QT, N_RESULT = range(9)
 
 
@@ -1339,8 +1461,11 @@ class DownloadTab(QWidget):
         self.inner = QTabWidget()
         self.playlists = PlaylistsPanel(self)
         self.notfound = NotFoundPanel(self)
+        self.removed = RemovedPanel(self)
         self.inner.addTab(self.playlists, "Playlisturi")
         self.inner.addTab(self.notfound, "Negăsite")
+        self.inner.addTab(self.removed, "Scoase din playlist")
+        self.playlists.changed.connect(self.removed.reload)
         self.playlists.changed.connect(self.notfound.reload)
         self.notfound.changed.connect(self.playlists.refresh_buttons)
         self.notfound.changed.connect(self._refresh_current_playlist_rows)

@@ -15,6 +15,9 @@ def main() -> int:
     QCoreApplication.setOrganizationName("MusicManager")
     QCoreApplication.setApplicationName(APP_NAME)
     app = QApplication(sys.argv)
+    from PySide6.QtCore import QSettings
+    from .ui.theme import apply_theme
+    apply_theme(app, QSettings().value("ui/theme", "dark") or "dark")
     from PySide6.QtGui import QIcon
     for base in (getattr(sys, "_MEIPASS", ""), os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "packaging")):
         icon = os.path.join(base, "icon.png")

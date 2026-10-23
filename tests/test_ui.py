@@ -297,3 +297,21 @@ def test_space_toggle(app):
     assert [t.item(r, 0).checkState() == Qt.Checked for r in range(3)] == [True, False, True]
     app.sendEvent(t, QKeyEvent(QEvent.KeyPress, Qt.Key_Space, Qt.NoModifier, " "))
     assert all(t.item(r, 0).checkState() == Qt.Unchecked for r in range(3))
+
+
+def test_player_tempo_and_dialogs(app):
+    from music_manager.ui.library_dialogs import TraktorChangesDialog
+    from music_manager.ui.player import PlayerPanel
+    p = PlayerPanel()
+    p.set_bpm(124)
+    p.tempo.setValue(1000)                  # capăt de slider, Normal = +8%
+    assert p.bpm_lbl.text() == "133.9 BPM"
+    p.tempo_range.setCurrentIndex(1)        # Wide = +16%
+    assert p.bpm_lbl.text() == "143.8 BPM"
+    p.tempo.setValue(0)
+    assert p.bpm_lbl.text() == "124.0 BPM"
+    d = TraktorChangesDialog([("/m/a.mp3", "bpm", 62.0, 124.0), ("/m/a.mp3", "rating", 2, 4)])
+    jobs = []
+    d.on_write = jobs.extend
+    d.write()
+    assert jobs == [("/m/a.mp3", {"bpm": "124", "rating": "4"}, None)]

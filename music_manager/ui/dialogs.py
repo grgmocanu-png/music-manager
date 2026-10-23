@@ -76,8 +76,11 @@ def write_tags_in_background(parent, jobs: list[tuple[str, dict, object]], on_do
             if cancelled():
                 break
             try:
-                if isinstance(cover, str):
+                if isinstance(cover, (str, list)):
+                    want = bool(cover)
                     cover = tf.download_cover(cover)
+                    if want and not cover:
+                        errors.append(f"{os.path.basename(path)}: copertă găsită, dar n-am putut-o descărca")
                 if fields or cover:
                     current = tagmod.read_tags(path).fields
                     clear = tuple(k for k, v in fields.items() if v == "")
@@ -165,6 +168,7 @@ class TagFinderDialog(QDialog):
         self.c_auto.toggled.connect(lambda v: settings().setValue("tags/auto_write", bool(v)))
         self._pending: list = []
         self._written = 0
+        self._derived: dict = {}       # rând -> (artist, titlu) luate din numele fișierului
         opts = QHBoxLayout()
         opts.addWidget(QLabel("Completez:"))
         for c in (self.c_genre, self.c_year, self.c_label, self.c_cover):
@@ -260,23 +264,41 @@ class TagFinderDialog(QDialog):
         if not rows:
             QMessageBox.information(self, "Taguri", "Bifează piesele pe care vrei să le caut.")
             return
-        if not self.c_again.isChecked():
-            rows = [i for i in rows if not self._searched(i)]
-        todo = [(i, self.tracks[i], self._need(self.tracks[i])) for i in rows]
-        todo = [x for x in todo if x[2] and x[1].artist and (x[1].title or x[1].filename)]
+        todo, skipped = [], {}
+        for i in rows:
+            t = self.tracks[i]
+            done = self._searched(i)
+            if done and not self.c_again.isChecked():
+                skipped[i] = f"căutată deja pe {done[:10]} — bifează „Caută din nou”"
+                continue
+            need = self._need(t)
+            if not need:
+                skipped[i] = "are deja tot ce ai cerut — bifează „Suprascrie” ca s-o cauți din nou"
+                continue
+            artist, title = t.artist, t.title
+            if not (artist and title):
+                fa, ft = lib.artist_title_from_filename(t)
+                artist, title = artist or fa, title or ft
+                if fa or ft:
+                    self._derived[i] = (artist, title)
+            if not artist:
+                skipped[i] = "n-are artist nici în taguri, nici în numele fișierului („Artist - Titlu”)"
+                continue
+            todo.append((i, t, need, artist, title or t.display_title))
+        for i, why in skipped.items():
+            self.table.setItem(i, 7, _item(why, "#c0392b", tooltip=why))
         if not todo:
-            QMessageBox.information(self, "Taguri", "Piesele bifate fie au fost căutate deja (bifează „Caută din nou”), "
-                                    "fie au deja tot ce ai cerut, fie n-au artist/titlu.")
+            QMessageBox.information(self, "Taguri", "Nu am ce căuta. Motivul e scris pe fiecare rând, în coloana „Găsit în”.")
             return
         for i in range(self.table.rowCount()):
             self.table.item(i, 0).setCheckState(Qt.Unchecked)     # de acum bifele = ce aplic
 
         def work(progress, cancelled):
-            for n, (i, t, need) in enumerate(todo):
+            for n, (i, t, need, artist, title) in enumerate(todo):
                 if cancelled():
                     break
                 try:
-                    r = finder.find(t.artist, t.display_title, t.duration, need)
+                    r = finder.find(artist, title, t.duration, need)
                 except RuntimeError as e:
                     progress(n, len(todo), json.dumps({"error": str(e)}))
                     return False
@@ -369,7 +391,14 @@ class TagFinderDialog(QDialog):
             f["year"] = r.year
         if self.c_label.isChecked() and r.label and (over or not t.label):
             f["label"] = r.label
-        cover = r.cover_url if (self.c_cover.isChecked() and r.cover_url and (over or not t.has_cover)) else None
+        cover = (r.cover_urls or [r.cover_url]) if (self.c_cover.isChecked() and r.cover_url and
+                                                   (over or not t.has_cover)) else None
+        if i in self._derived and (f or cover):
+            a, ti = self._derived[i]
+            if a and not t.artist:
+                f["artist"] = a
+            if ti and not t.title:
+                f["title"] = ti
         return (t.path, f, cover) if (f or cover) else None
 
     def _remember_written(self, i, job):

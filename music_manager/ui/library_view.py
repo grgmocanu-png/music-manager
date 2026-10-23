@@ -74,6 +74,37 @@ def documents_dirs() -> list[str]:
     return res
 
 
+def key_color(cam: str) -> QColor:
+    """Culoarea cheii pe roata Camelot (ca în Traktor / Rekordbox), în tonuri stinse."""
+    try:
+        n = int(cam[:-1])
+    except ValueError:
+        return QColor("#9aa0a8")
+    c = QColor()
+    c.setHsl(int(((n - 1) * 30 + 200) % 360), 110, 165 if cam.endswith("B") else 140)
+    return c
+
+
+_FAM_COLORS = ["#a9bde6", "#9fd4c9", "#e8c39a", "#e5aca3", "#bfb5ee", "#b5d6a8", "#e2b0d6", "#d8d4a0",
+               "#9fc6e0", "#e0b98f"]
+
+
+def family_color(fam: str) -> QColor:
+    from .dialogs import families
+    fams = families()
+    i = fams.index(fam) if fam in fams else sum(map(ord, fam))
+    return QColor(_FAM_COLORS[i % len(_FAM_COLORS)])
+
+
+def bpm_ranges() -> dict:
+    try:
+        raw = json.loads(settings().value("genres/bpm_ranges", "") or "{}")
+        out = {k: (float(v[0]), float(v[1])) for k, v in raw.items()}
+    except (ValueError, TypeError, IndexError):
+        out = {}
+    return out or dict(ldb.DEFAULT_BPM_RANGES)
+
+
 def source_priority() -> list[str]:
     try:
         p = json.loads(settings().value("library/priority", "") or "[]")
@@ -174,7 +205,8 @@ class ItemModel(QAbstractTableModel):
             if col == "energy":
                 return it.energy or ""
             if col == "bpm":
-                return (f"{it.bpm:.1f}".rstrip("0").rstrip(".")) if it.bpm else ""
+                v = (f"{it.bpm:.1f}".rstrip("0").rstrip(".")) if it.bpm else ""
+                return f"{v} ?" if it.bpm_suggest else v
             if col == "key":
                 cam = it.camelot
                 return f"{cam}  {CAMELOT.get(cam, '')}" if cam else it.key
@@ -231,6 +263,12 @@ class ItemModel(QAbstractTableModel):
                 return QBrush(QColor("#27ae60"))
             if col == "role" and not it.role and it.role_suggested:
                 return QBrush(QColor("#999999"))
+            if col == "bpm" and it.bpm_suggest:
+                return QBrush(QColor("#d68a1f"))
+            if col == "key" and it.camelot:
+                return QBrush(key_color(it.camelot))
+            if col == "family" and it.family:
+                return QBrush(family_color(it.family))
         if role == Qt.ToolTipRole:
             if it.offline:
                 return "Discul pe care e piesa nu e conectat: " + it.path
@@ -244,6 +282,9 @@ class ItemModel(QAbstractTableModel):
                 if it.plays >= 2:
                     return f"Sugestie din seturile tale: cântată de {it.plays} ori, în medie la {it.avg_pos:.0%} din set."
                 return "Sugestie din energie și BPM. Tastele 1–6: Opener, Warm-up, Build, Peak, Closer, After."
+            if col == "bpm" and it.bpm_suggest:
+                return (f"BPM de verificat: pentru {it.family} pare să fie {it.bpm_suggest:g}.\n"
+                        "Click dreapta → ×2 / ½ ca să-l corectezi (se scrie și în fișier).")
             if col == "analyzed":
                 if it.an_error:
                     return f"Analiza a eșuat ({it.analyzed[:10]}): {it.an_error}\nClick dreapta → Analizează ca să încerci din nou."
@@ -333,15 +374,20 @@ class FilterProxy(QSortFilterProxyModel):
 
 
 class TrackTable(QTableView):
-    role_key = Signal(str)          # tastele 1–6 / 0
+    role_key = Signal(str)          # Space = play/stop; „rating:N” = tastele 1–5 / 0
+    player_key = None               # funcție (eveniment) -> bool: tastele playerului
 
     def keyPressEvent(self, e):
         k = e.text()
-        if k and k in "0123456" and not e.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
-            self.role_key.emit("" if k == "0" else ldb.ROLES[int(k) - 1])
+        if self.state() == QAbstractItemView.EditingState:
+            return super().keyPressEvent(e)
+        if k and k in "012345" and not e.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
+            self.role_key.emit(f"rating:{k}")
             return
         if e.key() == Qt.Key_Space:
             self.role_key.emit("__play__")
+            return
+        if self.player_key and self.player_key(e):
             return
         super().keyPressEvent(e)
 
@@ -682,6 +728,8 @@ class LibraryView(QWidget):
         self.table.role_key.connect(self._role_key)
 
         self.player = PlayerPanel()
+        self.table.player_key = self.player.handle_key
+        self.table.selectionModel().currentRowChanged.connect(self._row_changed)
         self.player.request_next.connect(self._play_next)
 
         center = QWidget()
@@ -773,8 +821,11 @@ class LibraryView(QWidget):
         self.collections = cols
         self._col_mtimes = {c.path: c.mtime for c in cols}
         self._tracks = tracks
+        changes = self._traktor_changes(cols)
         self._rebuild_items()
         self.state.set_tracks(tracks)
+        if changes:
+            QTimer.singleShot(400, lambda: self._show_traktor_changes(changes))
         msgs = [f"{len(self.items)} piese"]
         for c in cols:
             msgs.append(f"{c.source}: {len(c.tracks)} piese" if not c.error else f"{c.source}: eroare ({c.error[:60]})")
@@ -788,6 +839,51 @@ class LibraryView(QWidget):
         if settings().value("library/auto_analyze2", False) in (True, "true"):
             self.analyze_missing(silent=True)
         self._auto_export()
+
+    def _traktor_changes(self, cols):
+        """Compară colecția Traktor cu cea de data trecută. Cea mai nouă schimbare câștigă:
+        dacă ai schimbat BPM / Key / Rating în Traktor, valoarea pusă înainte în Manager e înlocuită."""
+        snap_path = os.path.join(data_dir(), "traktor_snapshot.json")
+        try:
+            with open(snap_path, "r", encoding="utf-8") as f:
+                old = json.load(f)
+        except (OSError, ValueError):
+            old = {}
+        new = ldb.traktor_snapshot(cols)
+        if not new:
+            return []
+        changes = ldb.diff_snapshot(old, new)
+        try:
+            tmp = snap_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(new, f)
+            os.replace(tmp, snap_path)
+        except OSError:
+            pass
+        known = {djc.norm_path(t.path): t.path for t in self._tracks}
+        out = []
+        for k, field, a, b in changes:
+            path = known.get(k)
+            if not path:
+                continue
+            e = self.db.extra(path)
+            if field == "bpm":
+                e.user_bpm = 0.0
+            elif field == "key":
+                e.user_key = ""
+            elif field == "rating":
+                e.rating = 0
+            out.append((path, field, a, b))
+        if out:
+            self.db.save()
+        return out
+
+    def _show_traktor_changes(self, changes):
+        from .library_dialogs import TraktorChangesDialog
+        dlg = TraktorChangesDialog(changes, self)
+        dlg.on_write = lambda jobs: write_tags_in_background(self, jobs, None, "Scriu în fișiere schimbările din Traktor")
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.show()
 
     def _rebuild_items(self):
         # date analizate deja (din cache) -> în baza bibliotecii, ca să fie folosite imediat
@@ -815,6 +911,7 @@ class LibraryView(QWidget):
         """Familia de gen și playlisturile în care apare fiecare piesă."""
         from .dialogs import genre_mapper
         mapper = genre_mapper()
+        ranges = bpm_ranges()
         member: dict[str, list[str]] = {}
         for p in self.db.playlists:
             if p.kind == "manual":
@@ -837,6 +934,7 @@ class LibraryView(QWidget):
                 fam = mapper.family_of(style) if style else ""
             it.family = self.db.extra(it.path).user_family if (not it.missing and not it.offline and
                                                                  self.db.extra(it.path).user_family) else fam
+            it.bpm_suggest = ldb.bpm_suggestion(it.bpm, it.family, ranges) if it.bpm_src != "Manual" else 0.0
             it.playlists = member.get(djc.norm_path(it.path), [])
 
     def _reloc(self, path: str) -> str:
@@ -941,6 +1039,9 @@ class LibraryView(QWidget):
         missing = self._missing_items()
         if missing:
             add(None, f"✗ Lipsă / offline ({len(missing)})", ("missing",))
+        n_bpm = sum(1 for it in self.items if it.bpm_suggest)
+        if n_bpm:
+            add(None, f"❓ BPM de verificat ({n_bpm})", ("bpmcheck",))
         manual = add(None, "Playlisturi", ("hdr",), True)
         smart = add(None, "Playlisturi inteligente", ("hdr",), True)
         for p in self.db.playlists:
@@ -1009,6 +1110,8 @@ class LibraryView(QWidget):
             return "Nu sunt în colecția Traktor", [it for it in self.items if not it.in_traktor]
         if kind == "missing":
             return "Lipsă / offline (din playlisturi)", self._missing_items()
+        if kind == "bpmcheck":
+            return "BPM de verificat (dublu / jumătate?)", [it for it in self.items if it.bpm_suggest]
         if kind == "pl":
             p = self.db.get_playlist(view[1])
             if p:
@@ -1131,11 +1234,19 @@ class LibraryView(QWidget):
         t = it.track
         info = " · ".join(x for x in (t.genre, t.comment, f"{it.bpm:g} BPM" if it.bpm else "",
                                       it.camelot, t.year, t.label) if x)
-        self.player.load(it.path, f"{t.artist} - {t.display_title}", info, t.duration, a)
+        self.player.load(it.path, f"{t.artist} - {t.display_title}", info, t.duration, a, bpm=it.bpm)
         if a is None:
             self.worker.add([it.path], front=True)
         self.table.model_.playing = it.path
         self.table.viewport().update()
+
+    def _row_changed(self, cur, _prev):
+        """Treci la altă piesă cu ↑/↓ cât cântă ceva: pornește singură (autoplay)."""
+        if not cur.isValid() or not self.player.is_playing():
+            return
+        it = self.table.item_at(cur)
+        if it is not None and it.path != self.player.path and not (it.missing or it.offline):
+            self.play(it)
 
     def _play_next(self, step):
         vis = self.table.visible()
@@ -1250,6 +1361,19 @@ class LibraryView(QWidget):
             m.addAction("Scoate din playlist", lambda: self.remove_from_playlist(sel))
             m.addAction("Mută mai sus", lambda: self.move_in_playlist(sel, -1))
             m.addAction("Mută mai jos", lambda: self.move_in_playlist(sel, 1))
+        bm = m.addMenu("BPM")
+        with_bpm = [i for i in sel if i.bpm and not (i.missing or i.offline)]
+        if with_bpm:
+            one = with_bpm[0]
+            bm.addAction(f"×2" + (f"   ({one.bpm:g} → {one.bpm * 2:g})" if len(with_bpm) == 1 else f"   ({len(with_bpm)} piese)"),
+                         lambda: self.scale_bpm(with_bpm, 2))
+            bm.addAction(f"½" + (f"   ({one.bpm:g} → {one.bpm / 2:g})" if len(with_bpm) == 1 else f"   ({len(with_bpm)} piese)"),
+                         lambda: self.scale_bpm(with_bpm, 0.5))
+            sug = [i for i in with_bpm if i.bpm_suggest]
+            if sug:
+                bm.addAction(f"Acceptă sugestia ({len(sug)} piese)", lambda: self.accept_bpm(sug))
+        else:
+            bm.setEnabled(False)
         m.addAction("🎚 Piese care se mixează cu asta", lambda: self.show_mixable(sel[0]))
         rm = m.addMenu("Rol în set")
         for i, r in enumerate(ldb.ROLES):
@@ -1321,18 +1445,48 @@ class LibraryView(QWidget):
                 return False
             e.user_bpm = v
             self._refresh_item(it)
+            if v:
+                write_tags_in_background(self, [(it.path, {"bpm": str(int(round(v)))}, None)], None, "Scriu BPM-ul")
         elif col == "key":
             if value and not to_camelot(value):
                 QMessageBox.information(self, "Key", "Nu recunosc tonalitatea. Exemple: 8A, 11B, Am, F#m, Db.")
                 return False
             e.user_key = value
             self._refresh_item(it)
+            if value:
+                write_tags_in_background(self, [(it.path, {"key": value}, None)], None, "Scriu tonalitatea")
         else:
             return False
         self.db.save()
         self.status.setText(f"Am schimbat {COLS[[k for _, k in COLS].index(col)][0]} la "
                             f"„{it.track.artist} - {it.track.display_title}”.")
         return True
+
+    def scale_bpm(self, items, factor):
+        for it in items:
+            self.db.extra(it.path).user_bpm = round(it.bpm * factor, 2)
+        self._after_bpm(items)
+
+    def accept_bpm(self, items):
+        for it in items:
+            self.db.extra(it.path).user_bpm = it.bpm_suggest
+        self._after_bpm(items)
+
+    def _after_bpm(self, items):
+        """BPM-ul decis de tine: rămâne în Manager și se scrie și în fișier (îl vede și Rekordbox)."""
+        for it in items:
+            self._refresh_item(it)
+            it.bpm_suggest = 0.0
+        self.db.save()
+        jobs = [(it.path, {"bpm": str(int(round(it.bpm)))}, None) for it in items if it.bpm and not it.missing]
+        if jobs:
+            write_tags_in_background(self, jobs, None, "Scriu BPM-ul")
+        self.rebuild_tree()
+        if self.view[0] == "bpmcheck":
+            self.show_view(self.view)
+        else:
+            for it in items:
+                self.table.model_.refresh_row(it.path)
 
     def _refresh_item(self, it):
         new = ldb.build_items([it.track], self.db, self.collections, source_priority(),
@@ -1352,7 +1506,9 @@ class LibraryView(QWidget):
             else:
                 self.play(sel[0])
             return
-        self.set_role(sel, role)
+        if role.startswith("rating:"):
+            self.set_rating(sel, int(role.split(":")[1]))
+            return
 
     def set_role(self, items, role, write=True):
         for it in items:

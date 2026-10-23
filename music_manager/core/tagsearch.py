@@ -54,6 +54,7 @@ class TagResult:
     year: str = ""
     label: str = ""
     cover_url: str = ""
+    cover_urls: list = field(default_factory=list)   # toate copertele găsite, în ordinea surselor
     source: str = ""              # Discogs / MusicBrainz / Spotify (pe câmp: vezi sources)
     sources: dict = field(default_factory=dict)
     match: str = ""               # ce a găsit (pentru verificare)
@@ -98,22 +99,24 @@ class TagFinder:
                 time.sleep(1 + attempt)
         return None
 
-    def download_cover(self, url: str) -> tuple[bytes, str] | None:
-        if not url:
-            return None
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        try:
-            with urllib.request.urlopen(req, timeout=25, context=self._ctx) as r:
-                data = r.read(MAX_COVER_BYTES + 1)
-                ctype = (r.headers.get("Content-Type") or "").lower()
-        except Exception:
-            return None
-        if not data or len(data) > MAX_COVER_BYTES:
-            return None
-        if data[:8] == b"\x89PNG\r\n\x1a\n" or "png" in ctype:
-            return data, "image/png"
-        if data[:3] == b"\xff\xd8\xff" or "jpeg" in ctype or "jpg" in ctype:
-            return data, "image/jpeg"
+    def download_cover(self, url) -> tuple[bytes, str] | None:
+        """Descarcă coperta și o face JPEG simplu ≤600 px (ce citesc sigur Rekordbox / CDJ / Traktor).
+        `url` poate fi și o listă: se încearcă pe rând până merge una."""
+        from .covers import normalize_cover
+        for u in ([url] if isinstance(url, str) else list(url or [])):
+            if not u:
+                continue
+            req = urllib.request.Request(u, headers={"User-Agent": USER_AGENT})
+            try:
+                with urllib.request.urlopen(req, timeout=25, context=self._ctx) as r:
+                    data = r.read(MAX_COVER_BYTES + 1)
+            except Exception:
+                continue
+            if not data or len(data) > MAX_COVER_BYTES:
+                continue
+            out = normalize_cover(data)
+            if out:
+                return out
         return None
 
     # --- potrivire ----------------------------------------------------------
@@ -249,6 +252,8 @@ class TagFinder:
                 if not getattr(out, f) and getattr(r, f):
                     setattr(out, f, getattr(r, f))
                     out.sources[f] = r.source
+            if r.cover_url and r.cover_url not in out.cover_urls:
+                out.cover_urls.append(r.cover_url)
         out.source = ", ".join(sorted(set(out.sources.values())))
         return out
 

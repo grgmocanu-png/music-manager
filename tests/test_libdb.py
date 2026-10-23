@@ -173,3 +173,36 @@ def test_categories():
     pl = cat.plan(ts, "comment", lambda v: cat.remove_text(v, "Danceability"))
     assert pl == [("/a.mp3", "02 Danceability", "")]
     assert cat.value_counts(["a", "b", "a"]) == [("a", 2), ("b", 1)]
+
+
+def test_bpm_check_and_traktor_diff():
+    from music_manager.core.libdb import bpm_suggestion, diff_snapshot
+    assert bpm_suggestion(62, "House") == 124
+    assert bpm_suggestion(87, "Drum & Bass") == 174
+    assert bpm_suggestion(124, "House") == 0
+    assert bpm_suggestion(100, "House") == 0          # nici dublul, nici jumătatea nu intră
+    assert bpm_suggestion(62, "Necunoscut") == 0
+    old = {"/a": [60.0, "8A", 3], "/b": [124.0, "5A", 0]}
+    new = {"/a": [120.0, "8A", 4], "/b": [124.0, "6A", 0], "/c": [128.0, "1A", 0]}
+    d = diff_snapshot(old, new)
+    assert ("/a", "bpm", 60.0, 120.0) in d and ("/a", "rating", 3, 4) in d and ("/b", "key", "5A", "6A") in d
+    assert not any(x[0] == "/c" for x in d)
+    assert diff_snapshot({}, new) == []
+
+
+def test_removed_from_playlist_and_names():
+    from music_manager.core.library import Track, artist_title_from_filename
+    from music_manager.core.sources import SavedPlaylist
+    from music_manager.core.spotify import make_redirect_uri
+    p = SavedPlaylist(id="p", name="P", url="")
+    p.last_rows = [{"t": {"id": "1", "title": "A"}, "s": "have", "p": "/m/a.mp3"},
+                   {"t": {"id": "2", "title": "B"}, "s": "missing", "p": ""},
+                   {"t": {"id": "3", "title": "C"}, "s": "have", "p": ""}]
+    p.files = {"3": "/m/c.mp3"}
+    got = p.note_removed(["2"], "2026-10-23T10:00")
+    assert sorted(got) == ["1", "3"] and p.removed["3"]["path"] == "/m/c.mp3"
+    p.note_removed(["2", "1"], "x")
+    assert "1" not in p.removed
+    assert artist_title_from_filename(Track(path="/x/04. Roy Ayers - Running Away.wav")) == ("Roy Ayers", "Running Away")
+    assert artist_title_from_filename(Track(path="/x/nothing.wav")) == ("", "")
+    assert make_redirect_uri(8888, "/cb/") == "http://127.0.0.1:8888/cb"

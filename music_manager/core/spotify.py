@@ -29,6 +29,28 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
 REDIRECT_PORT = 8765
 REDIRECT_URI = f"http://127.0.0.1:{REDIRECT_PORT}/callback"
+REDIRECT_PREFIX = "http://127.0.0.1:"
+
+
+def make_redirect_uri(port: int = REDIRECT_PORT, path: str = "callback") -> str:
+    path = (path or "callback").strip().strip("/") or "callback"
+    return f"{REDIRECT_PREFIX}{int(port)}/{path}"
+
+
+def port_free(port: int) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", int(port)))
+        return True
+    except OSError:
+        return False
+
+
+def suggest_free_port(start: int = 8766) -> int:
+    for p in list(range(start, start + 40)) + [8888, 9876, 18765]:
+        if port_free(p):
+            return p
+    return 0
 SCOPES = "playlist-read-private playlist-read-collaborative"
 
 
@@ -124,8 +146,12 @@ def track_from_json(entry: dict) -> SpotifyTrack | None:
 class SpotifyClient:
     """Client minimal; tokenurile sunt salvate de interfață (QSettings) prin callback."""
 
-    def __init__(self, client_id: str, tokens: dict | None = None, on_tokens=None):
+    def __init__(self, client_id: str, tokens: dict | None = None, on_tokens=None,
+                 redirect_port: int = REDIRECT_PORT, redirect_path: str = "callback"):
         self.client_id = client_id.strip()
+        self.redirect_port = int(redirect_port or REDIRECT_PORT)
+        self.redirect_path = (redirect_path or "callback").strip().strip("/") or "callback"
+        self.redirect_uri = make_redirect_uri(self.redirect_port, self.redirect_path)
         self.tokens = dict(tokens or {})
         self.on_tokens = on_tokens
         self._ctx = _ssl_context()
@@ -141,11 +167,12 @@ class SpotifyClient:
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
         state = secrets.token_urlsafe(16)
         result: dict = {}
+        cb_path = "/" + self.redirect_path
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                if urllib.parse.urlparse(self.path).path != "/callback":
+                if urllib.parse.urlparse(self.path).path.rstrip("/") != cb_path:
                     self.send_response(404)
                     self.end_headers()
                     return
@@ -168,12 +195,16 @@ class SpotifyClient:
                 pass
 
         try:
-            server = http.server.HTTPServer(("127.0.0.1", REDIRECT_PORT), Handler)
-        except OSError as e:
-            raise SpotifyError(f"Portul {REDIRECT_PORT} e ocupat de alt program ({e}).")
+            server = http.server.HTTPServer(("127.0.0.1", self.redirect_port), Handler)
+        except OSError:
+            alt = suggest_free_port(self.redirect_port + 1)
+            raise SpotifyError(
+                f"Portul {self.redirect_port} e ocupat de alt program. În Setări → Spotify pune alt port"
+                + (f" (de exemplu {alt}, care e liber)" if alt else "")
+                + ", apoi adaugă adresa nouă la Redirect URIs în dashboard-ul Spotify.")
         server.timeout = 1
         params = {
-            "client_id": self.client_id, "response_type": "code", "redirect_uri": REDIRECT_URI,
+            "client_id": self.client_id, "response_type": "code", "redirect_uri": self.redirect_uri,
             "code_challenge_method": "S256", "code_challenge": challenge, "state": state,
             "scope": SCOPES,
         }
@@ -188,7 +219,7 @@ class SpotifyClient:
             raise SpotifyError(result.get("error") or "Nu am primit răspuns de la Spotify (timpul a expirat).")
         self._token_request({
             "grant_type": "authorization_code", "code": result["code"],
-            "redirect_uri": REDIRECT_URI, "client_id": self.client_id, "code_verifier": verifier,
+            "redirect_uri": self.redirect_uri, "client_id": self.client_id, "code_verifier": verifier,
         })
 
     def logout(self):
