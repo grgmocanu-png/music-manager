@@ -183,6 +183,8 @@ def test_main_window_smoke(app, tmp_path):
             ex.proxy.words, ex.proxy.f_mix, ex.proxy.f_const, ex.proxy.f_four, ex.proxy.f_vocal, ex.proxy.f_rating,
             ex.model.rowCount(), _acc, ex.proxy.sourceModel() is ex.model, ex.search.text(),
             [b.isChecked() for b in ex.filters.values()], ex.source)
+    import sys as _sys
+    print("DBG", repr(_dbg), file=_sys.stderr)
     ex.toggle_checks()
     assert sum(1 for r in ex.model.rows if r.checked) == 1, _dbg
     ex.filters["f_mix"].setChecked(True)
