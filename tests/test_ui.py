@@ -336,3 +336,72 @@ def test_player_tempo_and_dialogs(app):
     d.on_write = jobs.extend
     d.write()
     assert jobs == [("/m/a.mp3", {"bpm": "124", "rating": "4"}, None)]
+
+
+def test_v093_shared_player_tree_conflicts_windows(app, tmp_path, monkeypatch):
+    import json as _json
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    from music_manager.core import library as lib
+    from music_manager.ui.cleanup_dialogs import PlanTable
+    from music_manager.ui.common import settings
+    from music_manager.ui.main_window import MainWindow
+    from music_manager.ui import windows as wins
+
+    root = tmp_path / "Muzica"
+    (root / "House" / "Deep").mkdir(parents=True)
+    settings().setValue("explore/folders", _json.dumps([str(root)]))
+    win = MainWindow()
+    win.show()
+    app.processEvents()
+    # același player în Bibliotecă și Explore
+    win._go(4)
+    assert win.explore.player is win.library.player
+    assert win.library.player.parentWidget() is win.explore
+    win._go(3)
+    assert win.library.player.parentWidget() is win.library
+    # arbore de foldere cu subfoldere (se deschid la cerere)
+    ex = win.explore
+    ex.rebuild_tree()
+    node = None
+    for i in range(ex.tree.topLevelItemCount()):
+        top = ex.tree.topLevelItem(i)
+        for j in range(top.childCount()):
+            if list(top.child(j).data(0, Qt.UserRole) or [])[1:] == [str(root)]:
+                node = top.child(j)
+    assert node is not None and node.childCount() == 1        # „…” până îl deschizi
+    node.setExpanded(True)
+    app.processEvents()
+    names = [node.child(k).text(0) for k in range(node.childCount())]
+    assert names == ["House"]
+    # butonul Analizează nu mai trimite bool
+    ex.b_analyze.click()
+    app.processEvents()
+    # conflict → _Dubluri
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"1")
+    pt = PlanTable("redenumire")
+    pt.set_plan([lib.RenameItem(str(src), str(tmp_path / "A - B.mp3"), "conflict", "există deja")])
+    pt._check_conflicts()
+    plan = pt.final_plan()
+    assert plan[0].status == "ok" and "_Dubluri" in plan[0].dest
+    # ferestre separate, strânse în Activități
+    from PySide6.QtWidgets import QDialog, QHBoxLayout, QPushButton, QVBoxLayout
+    d = QDialog(win)
+    lay = QVBoxLayout(d)
+    row = QHBoxLayout()
+    row.addWidget(QPushButton("OK"))
+    lay.addLayout(row)
+    wins.tool_window(d, "Test")
+    assert d in wins.windows() and d.parentWidget() is None and d.parent() is win
+    d.hide()
+    win.jobs_button.refresh()
+    assert "strâns" in win.jobs_button.text() or "activit" in win.jobs_button.text()
+    win.jobs_button.open()
+    app.processEvents()
+    assert win.jobs_button.dialog.isVisible()
+    win.jobs_button.dialog.hide()
+    d.close()
+    app.processEvents()
+    win.close()

@@ -16,7 +16,8 @@ def apply_theme(app, name: str = "dark") -> None:
             "QLabel#logo { font-weight: 700; font-size: 15px; } QLabel#pageTitle { font-size: 17px; font-weight: 600; }"
             "QLabel#muted, QLabel#navlabel { color: gray; }"
             "QPushButton#primary { background: #e0a458; color: #15171b; font-weight: 600; }"
-            "QFrame#card { border: 1px solid #d0d0d0; border-radius: 10px; }")
+            "QFrame#card { border: 1px solid #d0d0d0; border-radius: 10px; }"
+            "QDialog#jobsPopup { border: 1px solid #b0b0b0; }")
         return
     p = QPalette()
     c = {
@@ -84,6 +85,7 @@ def apply_theme(app, name: str = "dark") -> None:
         "QTreeWidget#sidebar::item:hover { background: #22262c; }"
         # carduri (Curățenie) și secțiuni (Setări)
         "QFrame#card { background: #1c1f24; border: 1px solid #2c3138; border-radius: 10px; }"
+        "QDialog#jobsPopup { background: #1c1f24; border: 1px solid #3a4048; }"
         "QListWidget#sections { background: #1a1d21; border: 0; border-right: 1px solid #2c3138; padding: 10px 6px; }"
         "QListWidget#sections::item { padding: 9px 12px; border-radius: 6px; color: #c9ccd1; }"
         "QListWidget#sections::item:selected { background: #2a2f36; color: #f1efec; font-weight: 600; }"

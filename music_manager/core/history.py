@@ -5,6 +5,7 @@ urmează fișierul când e redenumit sau mutat de aplicație.
 """
 from __future__ import annotations
 
+from .safeio import write_json
 import json
 import os
 from datetime import datetime
@@ -32,11 +33,7 @@ class CleanupHistory:
             self.data = {}
 
     def save(self):
-        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"files": self.data}, f, ensure_ascii=False)
-        os.replace(tmp, self.path)
+        write_json(self.path, {"files": self.data}, ensure_ascii=False)
 
     def done(self, path: str, step: str) -> str:
         """Data la care s-a făcut pasul (sau "" dacă nu s-a făcut)."""

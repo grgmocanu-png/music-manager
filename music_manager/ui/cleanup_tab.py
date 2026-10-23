@@ -214,7 +214,8 @@ class CleanupTab(QWidget):
             return
         dlg = DuplicatesDialog(groups, self, targets)
         dlg.on_applied = self._after_change
-        dlg.exec()
+        from .windows import tool_window
+        tool_window(dlg, f"Dubluri — {len(groups)} grupuri")
 
     def rename(self):
         tracks = self._targets()
@@ -223,7 +224,8 @@ class CleanupTab(QWidget):
             return
         dlg = RenameDialog(tracks, self)
         dlg.on_applied = self._after_change
-        dlg.exec()
+        from .windows import tool_window
+        tool_window(dlg)
 
     def clean_names(self):
         tracks = self._targets()
@@ -233,7 +235,8 @@ class CleanupTab(QWidget):
         from .dialogs import NameCleanupDialog
         dlg = NameCleanupDialog(tracks, self)
         dlg.on_applied = self._after_change
-        dlg.exec()
+        from .windows import tool_window
+        tool_window(dlg)
 
     def tags_online(self):
         tracks = self._targets()
@@ -244,8 +247,8 @@ class CleanupTab(QWidget):
         from .settings_tab import spotify_client
         dlg = TagFinderDialog(tracks, spotify_client(), self)
         dlg.on_applied = self._after_change
-        dlg.setAttribute(Qt.WA_DeleteOnClose)
-        dlg.show()          # nu blochează: poți adăuga playlisturi etc. cât caută
+        from .windows import tool_window
+        tool_window(dlg)    # fereastră separată: nu blochează, are buton în bara de task-uri
 
     def _after_change(self):
         self.table.viewport().update()

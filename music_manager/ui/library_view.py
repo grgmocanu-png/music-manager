@@ -35,8 +35,9 @@ COLS = [("", "play"), ("#", "num"), ("Artist", "artist"), ("Title", "title"), ("
         ("Comments", "style"), ("Role", "role"), ("Energy", "energy"), ("BPM", "bpm"), ("Key", "key"), ("Year", "year"),
         ("Rating", "rating"), ("Duration", "duration"), ("Label", "label"), ("Date Added", "added"),
         ("Quality", "quality"), ("BPM / Key Source", "src"), ("Playlists", "playlists"), ("Folder", "folder"),
-        ("Date Analyzed", "analyzed"), ("Cover", "cover")]
-EDITABLE = {"artist", "title", "family", "genre", "style", "role", "energy", "bpm", "key", "year", "label"}
+        ("Date Analyzed", "analyzed"), ("Cover", "cover"), ("Mood", "mood"), ("Grouping", "grouping")]
+EDITABLE = {"artist", "title", "family", "genre", "style", "role", "energy", "bpm", "key", "year", "label",
+            "mood", "grouping"}
 DEFAULT_HIDDEN = {"src", "folder", "quality"}
 VALUE_COLS = {   # coloanele după care se pot sugera playlisturi (valoarea unei piese)
     "artist": lambda it: it.track.artist.split(",")[0].strip(),
@@ -46,6 +47,8 @@ VALUE_COLS = {   # coloanele după care se pot sugera playlisturi (valoarea unei
     "key": lambda it: it.camelot or it.key,
     "year": lambda it: it.track.year.strip(),
     "label": lambda it: it.track.label.strip(),
+    "mood": lambda it: it.track.mood.strip(),
+    "grouping": lambda it: it.track.grouping.strip(),
     "quality": lambda it: it.track.ext.upper(),
     "folder": lambda it: os.path.basename(os.path.dirname(it.path)),
     "cover": lambda it: "Cu copertă" if it.track.has_cover else "Fără copertă",
@@ -218,6 +221,10 @@ class ItemModel(QAbstractTableModel):
                 return fmt_duration(t.duration)
             if col == "label":
                 return t.label
+            if col == "mood":
+                return t.mood
+            if col == "grouping":
+                return t.grouping
             if col == "added":
                 return (it.date_added or "")[:10]
             if col == "quality":
@@ -230,7 +237,7 @@ class ItemModel(QAbstractTableModel):
             return {"artist": t.artist, "title": t.title, "family": it.family, "genre": t.genre,
                     "style": t.comment, "role": it.role, "energy": str(it.energy or ""),
                     "bpm": (f"{it.bpm:.2f}".rstrip("0").rstrip(".") if it.bpm else ""), "key": it.key,
-                    "year": t.year, "label": t.label}.get(col, "")
+                    "year": t.year, "label": t.label, "mood": t.mood, "grouping": t.grouping}.get(col, "")
         if role == SORT_ROLE:
             if col == "num":
                 return index.row()
@@ -400,7 +407,13 @@ class TrackTable(QTableView):
             return
         if self.player_key and self.player_key(e):
             return
-        super().keyPressEvent(e)
+        self.kbd_nav = True          # autoplay doar când schimbi piesa din taste (↑/↓)
+        try:
+            super().keyPressEvent(e)
+        finally:
+            self.kbd_nav = False
+
+    kbd_nav = False
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -770,6 +783,7 @@ class LibraryView(QWidget):
         lay.addWidget(split, 1)
         lay.addWidget(self.player)
         lay.addWidget(self.status)
+        self._lay = lay
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._periodic)
@@ -872,10 +886,8 @@ class LibraryView(QWidget):
             return []
         changes = ldb.diff_snapshot(old, new)
         try:
-            tmp = snap_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(new, f)
-            os.replace(tmp, snap_path)
+            from ..core.safeio import write_json
+            write_json(snap_path, new)
         except OSError:
             pass
         known = {djc.norm_path(t.path): t.path for t in self._tracks}
@@ -1269,14 +1281,55 @@ class LibraryView(QWidget):
         self.table.viewport().update()
 
     def _row_changed(self, cur, _prev):
-        """Treci la altă piesă cu ↑/↓ cât cântă ceva: pornește singură (autoplay)."""
-        if not cur.isValid() or not self.player.is_playing():
+        """Treci la altă piesă cu ↑/↓ cât cântă ceva: pornește singură (autoplay).
+        Click-ul (stânga/dreapta) doar selectează."""
+        if not cur.isValid() or not self.table.kbd_nav or not self.player.is_playing():
             return
         it = self.table.item_at(cur)
         if it is not None and it.path != self.player.path and not (it.missing or it.offline):
             self.play(it)
 
+    def attach_player(self):
+        """Playerul comun vine în pagina asta, cu tot ce cântă."""
+        if self._lay.indexOf(self.player) < 0:
+            self._lay.insertWidget(1, self.player)
+        self.focus_playing()
+
+    def _row_of(self, path) -> int:
+        k = djc.norm_path(path)
+        for r in range(self.table.proxy.rowCount()):
+            if djc.norm_path(self.table.item_at(self.table.proxy.index(r, 0)).path) == k:
+                return r
+        return -1
+
+    def focus_playing(self):
+        """Arată piesa care cântă (venind din Explore): o selectează, ca să meargă click dreapta pe ea."""
+        p = self.player.path
+        if not p:
+            return
+        self.table.model_.playing = p
+        if djc.norm_path(p) not in self.by_path:
+            self.status.setText("Piesa care cântă nu e în bibliotecă — o poți copia din Explore („Copiază în ▾”). "
+                                f"[{os.path.basename(p)}]")
+            self.table.viewport().update()
+            return
+        row = self._row_of(p)
+        if row < 0 and self.view != ("all",):
+            self.show_view(("all",))
+            row = self._row_of(p)
+        if row < 0:
+            self.clear_filters()
+            row = self._row_of(p)
+        if row >= 0:
+            ix = self.table.proxy.index(row, 2)
+            self.table.setCurrentIndex(ix)
+            self.table.selectRow(row)
+            self.table.scrollTo(ix, QAbstractItemView.PositionAtCenter)
+        self.table.viewport().update()
+
     def _play_next(self, step):
+        if not self.isVisible():
+            return
         vis = self.table.visible()
         if not vis:
             return
@@ -1429,7 +1482,7 @@ class LibraryView(QWidget):
 
     # ===== editare direct în tabel =====
     TAG_FIELDS = {"artist": "artist", "title": "title", "genre": "genre", "style": "comment",
-                  "year": "year", "label": "label"}
+                  "year": "year", "label": "label", "mood": "mood", "grouping": "grouping"}
 
     def edit_cell(self, it, col, value) -> bool:
         """Ai modificat o celulă. Tagurile se scriu în fișier (în fundal); restul rămâne în aplicație."""
@@ -1725,8 +1778,8 @@ class LibraryView(QWidget):
         from .settings_tab import spotify_client
         dlg = TagFinderDialog(tracks, spotify_client(), self)
         dlg.on_applied = self.reload
-        dlg.setAttribute(Qt.WA_DeleteOnClose)
-        dlg.show()          # nu blochează: poți lucra în alte taburi cât caută
+        from .windows import tool_window
+        tool_window(dlg)    # fereastră separată: nu blochează, are buton în bara de task-uri
 
     def remove_danceability(self):
         jobs = []

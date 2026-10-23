@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 
+from .safeio import write_json
 from .djcollections import Collection, best_values, norm_path
 from .library import Track, normalize
 from .playlist import compatible_keys, to_camelot
@@ -203,13 +204,9 @@ class LibraryDB:
             pass
 
     def save(self):
-        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"extras": {k: asdict(v) for k, v in self.extras.items()},
-                       "playlists": [asdict(p) for p in self.playlists],
-                       "relocations": self.relocations}, f, ensure_ascii=False)
-        os.replace(tmp, self.path)
+        write_json(self.path, {"extras": {k: asdict(v) for k, v in self.extras.items()},
+                               "playlists": [asdict(p) for p in self.playlists],
+                               "relocations": self.relocations}, ensure_ascii=False)
 
     def extra(self, path: str) -> Extra:
         k = norm_path(path)

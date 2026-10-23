@@ -11,9 +11,10 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Callable, Iterable
 
+from .safeio import write_json
 from . import tags as tagmod
 
-CACHE_VERSION = 3
+CACHE_VERSION = 4   # 4: Mood, Grouping, URL, stil personalizat
 
 
 @dataclass
@@ -30,6 +31,10 @@ class Track:
     key: str = ""
     comment: str = ""
     label: str = ""
+    mood: str = ""
+    grouping: str = ""
+    url: str = ""                # pagina piesei din taguri (ex. Bandcamp)
+    tag_style: str = ""          # câmp personalizat STYLE / SUBGENRE din fișier
     has_cover: bool = False
     duration: float = 0.0
     bitrate: int = 0
@@ -76,6 +81,7 @@ def track_from_file(path: str) -> Track:
         for k, v in data.fields.items():
             setattr(t, k, v)
         t.has_cover = data.has_cover
+        t.url, t.tag_style = data.url, data.style
         i = data.info
         t.duration, t.bitrate = i.duration, i.bitrate
         t.sample_rate, t.bits_per_sample, t.lossless = i.sample_rate, i.bits_per_sample, i.lossless
@@ -131,11 +137,7 @@ class LibraryCache:
         self.items[track.path] = asdict(track)
 
     def save(self) -> None:
-        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"version": CACHE_VERSION, "tracks": self.items}, f)
-        os.replace(tmp, self.path)
+        write_json(self.path, {"version": CACHE_VERSION, "tracks": self.items})
 
 
 def scan(folders: Iterable[str], cache: LibraryCache | None = None,
@@ -448,6 +450,22 @@ def unique_path(path: str) -> str:
     while os.path.exists(f"{stem} ({n}){ext}"):
         n += 1
     return f"{stem} ({n}){ext}"
+
+
+def duplicates_dest(src: str, dest: str, taken: set[str] | None = None) -> str:
+    """Unde merge o piesă al cărei nume nou există deja: în „_Dubluri” lângă ea, cu numele nou
+    (cu „(2)”, „(3)”… dacă și acolo e ocupat)."""
+    d = os.path.join(os.path.dirname(src), DUPLICATES_FOLDER)
+    p = os.path.join(d, os.path.basename(dest or src))
+    taken = taken if taken is not None else set()
+    stem, ext = os.path.splitext(p)
+    n = 1
+    cand = p
+    while os.path.exists(cand) or os.path.normcase(cand) in taken:
+        n += 1
+        cand = f"{stem} ({n}){ext}"
+    taken.add(os.path.normcase(cand))
+    return cand
 
 
 # --- anulare -------------------------------------------------------------

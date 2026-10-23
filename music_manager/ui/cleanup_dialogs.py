@@ -50,6 +50,11 @@ class PlanTable(QWidget):
         b_all, b_none = QPushButton("Bifează tot"), QPushButton("Debifează tot")
         b_all.clicked.connect(lambda: self._set_all(True))
         b_none.clicked.connect(lambda: self._set_all(False))
+        self.b_dup = QPushButton("Bifează conflictele → _Dubluri")
+        self.b_dup.setToolTip("Când numele nou există deja: piesa pleacă într-un folder „_Dubluri” lângă ea, "
+                              "cu numele nou. Cea existentă rămâne pe loc. Ca la Dubluri: folderul „_Dubluri” nu intră în scanări, "
+                              "îl verifici și îl golești când vrei (se poate anula).")
+        self.b_dup.clicked.connect(self._check_conflicts)
         self.table = QTableWidget(0, 5)
         add_reveal_menu(self.table, lambda idx: self.plan[idx.row()].src)
         add_space_toggle(self.table, 0)
@@ -68,6 +73,7 @@ class PlanTable(QWidget):
         top.addWidget(self.show_f)
         top.addWidget(b_all)
         top.addWidget(b_none)
+        top.addWidget(self.b_dup)
         top.addWidget(self.include_done)
         top.addStretch()
         lay = QVBoxLayout(self)
@@ -97,10 +103,12 @@ class PlanTable(QWidget):
             label, color = STATUS[p.status]
             done = h.done(p.src, self.step)
             chk = QTableWidgetItem()
-            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable if p.status == "ok"
-                         else Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            if p.status == "ok":
+            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable
+                         if p.status in ("ok", "conflict") else Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            if p.status in ("ok", "conflict"):
                 chk.setCheckState(Qt.Unchecked)
+            if p.status == "conflict":
+                chk.setToolTip("Bifează ca s-o muți în „_Dubluri” (lângă ea), cu numele nou.")
             self.table.setItem(i, 0, chk)
             a = QTableWidgetItem(rel(p.src))
             a.setToolTip(p.src)
@@ -127,6 +135,17 @@ class PlanTable(QWidget):
                 self.table.item(i, 0).setCheckState(Qt.Checked if on else Qt.Unchecked)
         self.table.blockSignals(False)
         self.apply_filter()
+
+    def _check_conflicts(self):
+        self.table.blockSignals(True)
+        for i, p in enumerate(self.plan):
+            if p.status == "conflict":
+                self.table.item(i, 0).setCheckState(Qt.Checked)
+        self.table.blockSignals(False)
+        i = self.show_f.findData("conflict")
+        if i >= 0 and self.show_f.currentData() not in ("conflict", "all", "todo"):
+            self.show_f.setCurrentIndex(i)
+        self._update_counts()
 
     def _set_all(self, on):
         self.table.blockSignals(True)
@@ -158,8 +177,10 @@ class PlanTable(QWidget):
     def _update_counts(self):
         c = {k: sum(1 for p in self.plan if p.status == k) for k in STATUS}
         checked = len(self.checked())
+        dup = len(self.checked_conflicts())
         self.counts.setText(
             f"<b>{checked}</b> bifate de redenumit · "
+            + (f"<b>{dup}</b> conflicte bifate → _Dubluri · " if dup else "") +
             f"<a href='ok'>{c['ok']} se pot redenumi</a> · <a href='same'>{c['same']} deja corecte</a> · "
             f"<a href='missing'>{c['missing']} fără taguri</a> · <a href='conflict'>{c['conflict']} conflicte</a>"
             " — dă click pe o cifră ca să vezi piesele")
@@ -169,10 +190,25 @@ class PlanTable(QWidget):
                 if p.status == "ok" and self.table.item(i, 0) is not None
                 and self.table.item(i, 0).checkState() == Qt.Checked]
 
+    def checked_conflicts(self) -> list[lib.RenameItem]:
+        return [p for i, p in enumerate(self.plan)
+                if p.status == "conflict" and self.table.item(i, 0) is not None
+                and self.table.item(i, 0).checkState() == Qt.Checked]
+
     def final_plan(self) -> list[lib.RenameItem]:
         chosen = {id(p) for p in self.checked()}
-        return [p if id(p) in chosen else lib.RenameItem(p.src, p.dest, "skip" if p.status == "ok" else p.status,
-                                                         p.note) for p in self.plan]
+        dups = {id(p) for p in self.checked_conflicts()}
+        taken: set[str] = set()
+        out = []
+        for p in self.plan:
+            if id(p) in chosen:
+                out.append(p)
+            elif id(p) in dups:     # numele nou e ocupat: o mutăm în „_Dubluri”, lângă ea
+                out.append(lib.RenameItem(p.src, lib.duplicates_dest(p.src, p.dest, taken), "ok",
+                                          "mutată în _Dubluri (numele nou exista deja)"))
+            else:
+                out.append(lib.RenameItem(p.src, p.dest, "skip" if p.status == "ok" else p.status, p.note))
+        return out
 
 
 def _run_plan(parent, plan, step, title, on_done):

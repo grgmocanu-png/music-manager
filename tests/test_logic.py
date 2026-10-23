@@ -118,3 +118,21 @@ def test_m3u_roundtrip(tmp_path):
     text = pl.read_text(encoding="utf-8")
     assert "#EXTINF:200,Ana - Ș song" in text
     assert os.path.normpath(read_m3u(str(pl))[0]) == os.path.normpath(str(f1))
+
+
+def test_safe_write_and_duplicates_dest(tmp_path):
+    import json
+    from music_manager.core.library import duplicates_dest
+    from music_manager.core.safeio import write_json
+    p = tmp_path / "a" / "b.json"
+    write_json(str(p), {"x": 1})
+    write_json(str(p), {"x": 2})
+    assert json.loads(p.read_text())["x"] == 2
+    assert not [f for f in os.listdir(p.parent) if f.endswith(".tmp")]
+    src = tmp_path / "x.mp3"
+    src.write_bytes(b"1")
+    taken = set()
+    d1 = duplicates_dest(str(src), str(tmp_path / "A - B.mp3"), taken)
+    d2 = duplicates_dest(str(src), str(tmp_path / "A - B.mp3"), taken)
+    assert os.path.basename(os.path.dirname(d1)) == "_Dubluri"
+    assert d1 != d2 and d2.endswith("(2).mp3")

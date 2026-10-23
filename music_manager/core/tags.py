@@ -16,13 +16,13 @@ AUDIO_EXTENSIONS = {
 LOSSLESS_EXTENSIONS = {".flac", ".wav", ".wave", ".aif", ".aiff", ".alac"}
 
 FIELDS = ("artist", "title", "album", "albumartist", "genre", "year",
-          "track", "bpm", "key", "comment", "label")
+          "track", "bpm", "key", "comment", "label", "mood", "grouping")
 
 # --- corespondența câmpurilor pe formate ---------------------------------
 _ID3_FRAMES = {
     "artist": "TPE1", "title": "TIT2", "album": "TALB", "albumartist": "TPE2",
     "genre": "TCON", "year": "TDRC", "track": "TRCK", "bpm": "TBPM",
-    "key": "TKEY", "label": "TPUB",
+    "key": "TKEY", "label": "TPUB", "mood": "TMOO", "grouping": "TIT1",
 }
 _VORBIS_KEYS = {
     "artist": ["artist"], "title": ["title"], "album": ["album"],
@@ -30,11 +30,12 @@ _VORBIS_KEYS = {
     "year": ["date", "year"], "track": ["tracknumber"], "bpm": ["bpm", "tempo"],
     "key": ["initialkey", "key"], "comment": ["comment", "description"],
     "label": ["label", "organization", "publisher"],
+    "mood": ["mood"], "grouping": ["grouping", "contentgroup"],
 }
 _MP4_KEYS = {
     "artist": "\xa9ART", "title": "\xa9nam", "album": "\xa9alb",
     "albumartist": "aART", "genre": "\xa9gen", "year": "\xa9day",
-    "comment": "\xa9cmt",
+    "comment": "\xa9cmt", "grouping": "\xa9grp",
 }
 _MP4_KEY_FREEFORM = "----:com.apple.iTunes:initialkey"
 _MP4_LABEL_FREEFORM = "----:com.apple.iTunes:LABEL"
@@ -56,6 +57,13 @@ class TagData:
     info: AudioInfo = field(default_factory=AudioInfo)
     cover: tuple | None = None   # (bytes, mime)
     has_cover: bool = False
+    url: str = ""                # pagina piesei (ex. Bandcamp), dacă e în taguri
+    style: str = ""              # câmpuri personalizate de tip gen/stil (STYLE, SUBGENRE…)
+
+
+# câmpuri personalizate care conțin de obicei genul / stilul
+STYLE_KEYS = ("style", "styles", "subgenre", "genre2", "sub-genre", "discogs_style", "discogs style")
+URL_KEYS = ("website", "url", "purchaseurl", "purchase url", "www", "source", "comment_url")
 
 
 def is_audio_file(path: str) -> bool:
@@ -118,6 +126,23 @@ def read_tags(path: str, want_cover: bool = False) -> TagData:
         comms = tags.getall("COMM")
         if comms:
             raw["comment"] = _first(comms[0].text)
+        for fid in ("WOAF", "WOAR", "WOAS", "WCOM", "WPUB"):
+            for fr in tags.getall(fid):
+                u = str(getattr(fr, "url", "") or "").strip()
+                if u and not data.url:
+                    data.url = u
+        for fr in tags.getall("WXXX"):
+            u = str(getattr(fr, "url", "") or "").strip()
+            if u and (not data.url or "bandcamp" in u.lower()):
+                data.url = u
+        for fr in tags.getall("TXXX"):
+            desc = str(getattr(fr, "desc", "") or "").strip().lower()
+            if desc in STYLE_KEYS and not data.style:
+                data.style = _first(fr.text)
+            elif desc in URL_KEYS and not data.url:
+                v = _first(fr.text)
+                if v.lower().startswith("http"):
+                    data.url = v
         pics = tags.getall("APIC")
         data.has_cover = bool(pics)
         if want_cover and pics:
@@ -137,6 +162,15 @@ def read_tags(path: str, want_cover: bool = False) -> TagData:
         if _MP4_LABEL_FREEFORM in t and t[_MP4_LABEL_FREEFORM]:
             v = t[_MP4_LABEL_FREEFORM][0]
             raw["label"] = v.decode("utf-8", "ignore") if isinstance(v, bytes) else str(v)
+        for k, v in t.items():
+            kl = str(k).lower()
+            if kl.startswith("----:") and v:
+                name = kl.rsplit(":", 1)[-1]
+                val = v[0].decode("utf-8", "ignore") if isinstance(v[0], bytes) else str(v[0])
+                if name == "mood" and "mood" not in raw:
+                    raw["mood"] = val
+                elif name in STYLE_KEYS and not data.style:
+                    data.style = val
         data.has_cover = bool(t.get("covr"))
         if want_cover and "covr" in t and t["covr"]:
             c = t["covr"][0]
@@ -155,6 +189,14 @@ def read_tags(path: str, want_cover: bool = False) -> TagData:
                 if k in lower and _first(lower[k]):
                     raw[name] = _first(lower[k])
                     break
+        for k in STYLE_KEYS:
+            if k in lower and _first(lower[k]):
+                data.style = _first(lower[k])
+                break
+        for k in URL_KEYS:
+            if k in lower and _first(lower[k]).lower().startswith("http"):
+                data.url = _first(lower[k])
+                break
         pics = getattr(audio, "pictures", None)
         data.has_cover = bool(pics) or "metadata_block_picture" in lower
         if want_cover and pics:

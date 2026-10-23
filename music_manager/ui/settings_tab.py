@@ -362,7 +362,7 @@ class SettingsTab(QWidget):
 
     # ---------- Taguri ----------
     def _tags_box(self):
-        box = QGroupBox("Discogs (taguri online)")
+        box = QGroupBox("Taguri online: Discogs, Last.fm, Bandcamp")
         self.discogs = QLineEdit(settings().value("discogs/token", "") or "")
         self.discogs.setEchoMode(QLineEdit.Password)
         self.discogs.setPlaceholderText("lipește aici tokenul personal Discogs")
@@ -384,10 +384,30 @@ class SettingsTab(QWidget):
         self.mb = QCheckBox("Folosește și MusicBrainz (fără cont) când Discogs nu găsește")
         self.mb.setChecked(settings().value("tags/musicbrainz", True) not in (False, "false"))
         self.mb.toggled.connect(lambda v: settings().setValue("tags/musicbrainz", bool(v)))
+        self.bc = QCheckBox("Folosește Bandcamp când piesa are în taguri un link de Bandcamp (gen, an, label, copertă)")
+        self.bc.setChecked(settings().value("tags/bandcamp", True) not in (False, "false"))
+        self.bc.toggled.connect(lambda v: settings().setValue("tags/bandcamp", bool(v)))
+        self.by_artist = QCheckBox("Dacă piesa nu se găsește: genul cel mai frecvent al artistului pe Discogs")
+        self.by_artist.setChecked(settings().value("tags/by_artist", True) not in (False, "false"))
+        self.by_artist.toggled.connect(lambda v: settings().setValue("tags/by_artist", bool(v)))
+        # Last.fm: a doua sursă de gen (cheie API gratuită; se ține doar pe calculatorul ăsta)
+        self.lastfm = QLineEdit(settings().value("lastfm/key", "") or "")
+        self.lastfm.setEchoMode(QLineEdit.Password)
+        self.lastfm.setPlaceholderText("lipește aici cheia API Last.fm (opțional)")
+        self.lastfm.editingFinished.connect(lambda: settings().setValue("lastfm/key", self.lastfm.text().strip()))
+        lf_how = QLabel('Cheia o iei gratuit de pe <a href="https://www.last.fm/api/account/create">'
+                        "last.fm/api/account/create</a> (nume aplicație: orice, ex. Manager). Last.fm dă doar "
+                        "genuri (tagurile ascultătorilor), nu an sau label.")
+        lf_how.setWordWrap(True)
+        lf_how.setOpenExternalLinks(True)
         f = QFormLayout(box)
         f.addRow("Token Discogs:", tw)
         f.addRow("", how)
         f.addRow("", self.mb)
+        f.addRow("", self.by_artist)
+        f.addRow("", self.bc)
+        f.addRow("Cheie Last.fm:", self.lastfm)
+        f.addRow("", lf_how)
         return box
 
     def _genres_box(self):

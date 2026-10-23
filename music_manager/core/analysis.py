@@ -9,6 +9,7 @@ din Traktor / Rekordbox / Serato, când există, au prioritate.
 """
 from __future__ import annotations
 
+from .safeio import write_json
 import hashlib
 import json
 import os
@@ -403,10 +404,7 @@ def _write_alias(path: str, cache_dir: str) -> None:
 def save_cached(path: str, cache_dir: str, a: Analysis) -> None:
     os.makedirs(cache_dir, exist_ok=True)
     p = os.path.join(cache_dir, cache_key(path) + ".json")
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(asdict(a), f, separators=(",", ":"))
-    os.replace(tmp, p)
+    write_json(p, asdict(a), separators=(",", ":"))
     _write_alias(path, cache_dir)
 
 

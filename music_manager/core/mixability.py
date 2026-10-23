@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from .safeio import write_json
 from . import analysis as an
 
 MIX_VERSION = 1
@@ -80,9 +81,7 @@ def load_cached(path: str, cache_dir: str) -> MixInfo | None:
 def save_cached(path: str, cache_dir: str, m: MixInfo) -> None:
     os.makedirs(cache_dir, exist_ok=True)
     p = os.path.join(cache_dir, _key(path) + ".json")
-    with open(p + ".tmp", "w", encoding="utf-8") as f:
-        json.dump(asdict(m), f)
-    os.replace(p + ".tmp", p)
+    write_json(p, asdict(m))
 
 
 def move_cached(old: str, new: str, cache_dir: str) -> None:

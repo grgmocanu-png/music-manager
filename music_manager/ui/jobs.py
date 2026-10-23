@@ -207,7 +207,20 @@ class JobsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Activități")
-        self.resize(1000, 400)
+        # se deschide sub butonul din bara de sus; click pe lângă sau „—” o strânge la loc
+        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self.setObjectName("jobsPopup")
+        self.resize(1000, 420)
+        head = QHBoxLayout()
+        ttl = QLabel("Activități")
+        ttl.setObjectName("pageTitle")
+        head.addWidget(ttl)
+        head.addStretch()
+        b_min = QPushButton("—")
+        b_min.setToolTip("Strânge înapoi în butonul Activități")
+        b_min.setFixedWidth(36)
+        b_min.clicked.connect(self.hide)
+        head.addWidget(b_min)
         info = QLabel("Operațiile care modifică fișiere rulează pe rând, ca să nu lucreze două pe același "
                       "fișier. Poți închide fereastra asta și continua lucrul; activitățile merg mai departe.")
         info.setWordWrap(True)
@@ -220,13 +233,11 @@ class JobsDialog(QDialog):
         self.table.setColumnWidth(3, 260)
         b_clear = QPushButton("Șterge din listă cele terminate")
         b_clear.clicked.connect(manager().clear_finished)
-        close = QPushButton("Închide")
-        close.clicked.connect(self.close)
         row = QHBoxLayout()
         row.addWidget(b_clear)
         row.addStretch()
-        row.addWidget(close)
         lay = QVBoxLayout(self)
+        lay.addLayout(head)
         lay.addWidget(info)
         lay.addWidget(self.table, 1)
         lay.addLayout(row)
@@ -234,13 +245,35 @@ class JobsDialog(QDialog):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(500)
         manager().changed.connect(self.refresh)
+        from . import windows as wins
+        wins.hub.changed.connect(self.refresh)
         self.refresh()
 
     def refresh(self):
+        if not self.isVisible() and self.table.rowCount():
+            return
+        from . import windows as wins
+        wl = wins.windows()
         jobs = list(reversed(manager().jobs))
-        if self.table.rowCount() != len(jobs):
-            self.table.setRowCount(len(jobs))
-        for i, j in enumerate(jobs):
+        if self.table.rowCount() != len(jobs) + len(wl):
+            self.table.setRowCount(len(jobs) + len(wl))
+        # ferestrele de lucru (Taguri online, Dubluri…): le redeschizi de aici, cu tot progresul
+        for i, w in enumerate(wl):
+            it = QTableWidgetItem("🪟 " + wins.describe(w))
+            self.table.setItem(i, 0, it)
+            self.table.setItem(i, 1, QTableWidgetItem("Fereastră deschisă" if w.isVisible() and not w.isMinimized()
+                                                      else "Fereastră strânsă"))
+            self.table.removeCellWidget(i, 2)
+            self.table.setItem(i, 2, QTableWidgetItem(""))
+            cw = QWidget()
+            h = QHBoxLayout(cw)
+            h.setContentsMargins(2, 0, 2, 0)
+            b = QPushButton("Deschide")
+            b.clicked.connect(lambda _=False, ww=w: (self.hide(), wins.reopen(ww)))
+            h.addWidget(b)
+            self.table.setCellWidget(i, 3, cw)
+        off = len(wl)
+        for i, j in enumerate(jobs, start=off):
             name = QTableWidgetItem(j.name + (f" — {j.text}" if j.text and j.isRunning() else ""))
             name.setToolTip(j.error or j.text or j.name)
             self.table.setItem(i, 0, name)
@@ -310,6 +343,12 @@ class JobsButton(QPushButton):
 
     def refresh(self):
         act = manager().active()
+        from . import windows as wins
+        hidden = [w for w in wins.windows() if not w.isVisible() or w.isMinimized()]
+        if hidden and not act:
+            self.setText(f"🪟 {len(hidden)} {'fereastră strânsă' if len(hidden) == 1 else 'ferestre strânse'}")
+            self.setToolTip("Click: redeschide ferestrele de lucru")
+            return
         if not act:
             self.setText("✓ Nicio activitate")
             self.setToolTip("Click: lista activităților")
@@ -323,6 +362,18 @@ class JobsButton(QPushButton):
     def open(self):
         if self.dialog is None:
             self.dialog = JobsDialog(self.window())
-        self.dialog.show()
-        self.dialog.raise_()
-        self.dialog.activateWindow()
+        d = self.dialog
+        if d.isVisible():
+            d.hide()
+            return
+        # sub buton, aliniat la dreapta, fără să iasă din ecran
+        g = self.mapToGlobal(self.rect().bottomRight())
+        scr = self.screen().availableGeometry() if self.screen() else None
+        w = min(1000, scr.width() - 20) if scr else 1000
+        x = g.x() - w
+        if scr:
+            x = max(scr.left() + 10, x)
+        d.resize(w, d.height())
+        d.move(x, g.y() + 4)
+        d.show()
+        d.refresh()

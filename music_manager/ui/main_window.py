@@ -99,6 +99,9 @@ class MainWindow(QMainWindow):
         self.download.refresh_buttons()
         if self.PAGES[i][1] == "explore":
             self.explore.rebuild_tree()
+        if self.PAGES[i][1] in ("library", "explore"):
+            # același player în ambele pagini: muzica merge mai departe, iar piesa e selectată
+            getattr(self, self.PAGES[i][1]).attach_player()
 
     # compatibilitate: alte taburi cer „du-mă la …”
     @property
@@ -121,6 +124,8 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         manager().shutdown()
+        from .windows import close_all
+        close_all()
         settings().setValue("window/geometry", self.saveGeometry())
         self.library.shutdown()
         for tab in (self.download, self.cleanup, self.convert, self.library, self.explore, self.settings_tab):

@@ -25,7 +25,6 @@ from ..core import mixability as mx
 from .common import (
     analysis_dir, after_moves, data_dir, fmt_duration, mix_dir, reveal_in_folder, reveal_label, settings,
 )
-from .player import PlayerPanel
 
 COLS = [
     ("", "check"), ("Artist", "artist"), ("Title", "title"), ("Mix", "mix"), ("BPM", "bpm"),
@@ -282,7 +281,13 @@ class ExploreTable(QTableView):
             return
         if self.view.player.handle_key(e):
             return
-        super().keyPressEvent(e)
+        self.kbd_nav = True          # autoplay doar când schimbi piesa din taste (↑/↓)
+        try:
+            super().keyPressEvent(e)
+        finally:
+            self.kbd_nav = False
+
+    kbd_nav = False
 
 
 class ExploreView(QWidget):
@@ -298,6 +303,7 @@ class ExploreView(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.setObjectName("sidebar")
         self.tree.itemClicked.connect(self._source_clicked)
+        self.tree.itemExpanded.connect(self._expand_dir)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_menu)
         b_add = QPushButton("+ Adaugă folder")
@@ -316,7 +322,7 @@ class ExploreView(QWidget):
         self.b_analyze = QPushButton("Analizează")
         self.b_analyze.setObjectName("primary")
         self.b_analyze.setToolTip("Mixabilitatea pieselor afișate care n-au fost analizate (o singură dată pe piesă).")
-        self.b_analyze.clicked.connect(self.analyze_visible)
+        self.b_analyze.clicked.connect(lambda: self.analyze_visible())
         self.filters = {}
         bar = QHBoxLayout()
         bar.addWidget(self.title)
@@ -324,8 +330,7 @@ class ExploreView(QWidget):
         bar.addSpacing(10)
         bar.addWidget(self.b_analyze)
         bar.addSpacing(10)
-        for key, label in (("f_mix", "Mix ≥ 7"), ("f_const", "BPM constant"), ("f_four", "4/4"),
-                           ("f_vocal", "Acapella & vocal")):
+        for key, label in (("f_mix", "Mix ≥ 7"), ("f_const", "BPM constant"), ("f_four", "4/4")):
             b = QPushButton(label)
             b.setCheckable(True)
             b.setObjectName("chip")
@@ -407,8 +412,8 @@ class ExploreView(QWidget):
         self.model.dataChanged.connect(lambda *_: self._update_checked())
         self.model.modelReset.connect(self._update_checked)
 
-        # --- player (același ca în Bibliotecă) ---
-        self.player = PlayerPanel()
+        # --- player: același obiect ca în Bibliotecă (îl mută fereastra principală între pagini) ---
+        self.player = library.player
         self.player.request_next.connect(self._play_next)
         self.table.selectionModel().currentRowChanged.connect(self._row_changed)
         self.status = QLabel("")
@@ -428,7 +433,7 @@ class ExploreView(QWidget):
         lay = QVBoxLayout(self)
         lay.addWidget(split, 1)
         lay.addWidget(self.status)
-        lay.addWidget(self.player)
+        self._lay = lay
         self.rebuild_tree()
         state.tracks_changed.connect(self._library_changed)
 
@@ -493,7 +498,7 @@ class ExploreView(QWidget):
         libh.setExpanded(True)
         fh = add(None, "FOLDERE DIN CALCULATOR", ("hdr",), True)
         for d in self.folders():
-            add(fh, os.path.basename(d) or d, ("folder", d)).setToolTip(0, d)
+            self._dir_node(fh, d, os.path.basename(d) or d)
         fh.setExpanded(True)
         store = self.download.store
         online = [p for p in store.items]
@@ -506,14 +511,41 @@ class ExploreView(QWidget):
         dl = download_dir()
         if dl and os.path.isdir(dl):
             sh = add(None, "DESCĂRCATE DE PE SOULSEEK", ("hdr",), True)
-            add(sh, f"Toate ({os.path.basename(dl) or dl})", ("folder", dl))
-            try:
-                subs = sorted(d for d in os.listdir(dl) if os.path.isdir(os.path.join(dl, d)) and not d.startswith("_"))
-            except OSError:
-                subs = []
-            for d in subs:
-                add(sh, d, ("folder", os.path.join(dl, d)))
+            self._dir_node(sh, dl, f"Toate ({os.path.basename(dl) or dl})").setExpanded(True)
             sh.setExpanded(True)
+
+    # ===== arborele de foldere (subfolderele se citesc când deschizi nodul) =====
+    @staticmethod
+    def _subdirs(d) -> list[str]:
+        try:
+            with os.scandir(d) as it:
+                return sorted((e.path for e in it if e.is_dir(follow_symlinks=False)
+                               and not e.name.startswith((".", "$"))
+                               and e.name not in ("System Volume Information",)),
+                              key=lambda p: os.path.basename(p).lower())
+        except OSError:
+            return []
+
+    def _dir_node(self, parent, d, text=None):
+        it = QTreeWidgetItem([text or os.path.basename(d) or d])
+        it.setData(0, Qt.UserRole, ("folder", d))
+        it.setToolTip(0, d)
+        parent.addChild(it)
+        if self._subdirs(d):
+            ph = QTreeWidgetItem(["…"])
+            ph.setData(0, Qt.UserRole, ("hdr",))
+            it.addChild(ph)
+        return it
+
+    def _expand_dir(self, item):
+        data = item.data(0, Qt.UserRole)
+        if not data or data[0] != "folder":
+            return
+        if item.childCount() == 1 and (item.child(0).data(0, Qt.UserRole) or ("",))[0] == "hdr" \
+                and item.child(0).text(0) == "…":
+            item.takeChild(0)
+            for sd in self._subdirs(data[1]):
+                self._dir_node(item, sd)
 
     def _tree_menu(self, pos):
         it = self.tree.itemAt(pos)
@@ -618,8 +650,15 @@ class ExploreView(QWidget):
             d = source[1]
             if d in self._scan_cache:
                 self._show(os.path.basename(d) or d, self._scan_cache[d])
-            else:
-                self._scan(d)
+                return
+            # subfolder al unui folder deja citit: filtrăm din ce avem
+            nd = _norm(d).rstrip("\\/") + os.sep
+            for c, rows in list(self._scan_cache.items()):
+                if nd.startswith(_norm(c).rstrip("\\/") + os.sep):
+                    sub = [r for r in rows if _norm(r.path).startswith(nd)]
+                    self._show(os.path.basename(d) or d, sub)
+                    return
+            self._scan(d)
         else:      # toată muzica: biblioteca + folderele Explore + download (fără dubluri)
             rows, seen = [], set()
             for r in self._lib_rows(lv.items) + self._all_scanned():
@@ -694,6 +733,8 @@ class ExploreView(QWidget):
 
     # ===== analiză =====
     def analyze_visible(self, rows=None):
+        if isinstance(rows, bool):  # semnalul clicked(bool)
+            rows = None
         rows = rows if rows is not None else [self._row_at(self.proxy.index(i, 0)) for i in range(self.proxy.rowCount())]
         todo = [r for r in rows if r and r.path and not r.missing and r.mix is None]
         if not todo:
@@ -757,6 +798,29 @@ class ExploreView(QWidget):
         self.model.playing = r.path
         self.table.viewport().update()
 
+    def attach_player(self):
+        """Playerul comun vine în pagina asta (sub tabel), cu tot ce cântă."""
+        if self._lay.indexOf(self.player) < 0:
+            self._lay.insertWidget(1, self.player)
+        self.focus_playing()
+
+    def focus_playing(self):
+        """Selectează piesa care cântă, dacă e în lista afișată."""
+        p = self.player.path
+        if not p:
+            return
+        self.model.playing = p
+        k = _norm(p)
+        for i in range(self.proxy.rowCount()):
+            r = self._row_at(self.proxy.index(i, 0))
+            if r and r.path and _norm(r.path) == k:
+                ix = self.proxy.index(i, 1)
+                self.table.setCurrentIndex(ix)
+                self.table.selectRow(i)
+                self.table.scrollTo(ix, QAbstractItemView.PositionAtCenter)
+                break
+        self.table.viewport().update()
+
     def toggle_play(self):
         r = self._current()
         if r and r.path == self.player.path:
@@ -765,12 +829,15 @@ class ExploreView(QWidget):
             self.play(r)
 
     def _row_changed(self, cur, _prev):
-        if cur.isValid() and self.player.is_playing():
+        # click (stânga/dreapta) doar selectează; autoplay numai cu ↑/↓ cât cântă ceva
+        if cur.isValid() and self.table.kbd_nav and self.player.is_playing():
             r = self._row_at(cur)
             if r and r.path != self.player.path:
                 self.play(r, from_segment=True)
 
     def _play_next(self, step):
+        if not self.isVisible():
+            return
         rows = [self._row_at(self.proxy.index(i, 0)) for i in range(self.proxy.rowCount())]
         idx = next((i for i, r in enumerate(rows) if r and r.path == self.player.path), -1)
         nxt = idx + step

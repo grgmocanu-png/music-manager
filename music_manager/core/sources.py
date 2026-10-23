@@ -1,6 +1,7 @@
 """Playlisturile Spotify salvate (butoanele din tabul Download) și starea lor."""
 from __future__ import annotations
 
+from .safeio import write_json
 import json
 import os
 from dataclasses import asdict, dataclass, field
@@ -203,8 +204,4 @@ class PlaylistStore:
         self.save()
 
     def save(self) -> None:
-        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"playlists": [asdict(p) for p in self.items]}, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, self.path)
+        write_json(self.path, {"playlists": [asdict(p) for p in self.items]}, ensure_ascii=False, indent=1)
