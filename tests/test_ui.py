@@ -36,6 +36,17 @@ def _tracks(tmp_path):
     return out
 
 
+def _settle(app, lv):
+    """Biblioteca pornește o reîncărcare la 300 ms după deschidere: o așteptăm, ca să nu înlocuiască
+    piesele puse de test în mijlocul lui."""
+    import time
+    end = time.time() + 0.6
+    while time.time() < end:
+        app.processEvents()
+        time.sleep(0.02)
+    _wait(app, lv.task)
+
+
 def _wait(app, task, timeout=20):
     import time
     end = time.time() + timeout
@@ -58,7 +69,7 @@ def test_main_window_smoke(app, tmp_path):
     for _ in range(30):
         app.processEvents()
     lv = win.library
-    _wait(app, lv.task)
+    _settle(app, lv)
     lv.timer.stop()
     tracks = _tracks(tmp_path)
 
@@ -174,17 +185,8 @@ def test_main_window_smoke(app, tmp_path):
     from PySide6.QtCore import QItemSelectionModel
     ex.table.selectionModel().select(ex.proxy.index(0, 1),          # independent de tastele apăsate în test
                                      QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-    from PySide6.QtCore import QModelIndex
-    try:
-        _acc = ex.proxy.filterAcceptsRow(0, QModelIndex())
-    except Exception as _e:  # noqa: BLE001
-        _acc = repr(_e)
-    _dbg = (ex.proxy.rowCount(), len(ex._selected()), len(ex.table.selectionModel().selectedIndexes()),
-            ex.proxy.words, ex.proxy.f_mix, ex.proxy.f_const, ex.proxy.f_four, ex.proxy.f_vocal, ex.proxy.f_rating,
-            ex.model.rowCount(), _acc, ex.proxy.sourceModel() is ex.model, ex.search.text(),
-            [b.isChecked() for b in ex.filters.values()], ex.source)
     ex.toggle_checks()
-    assert sum(1 for r in ex.model.rows if r.checked) == 1, _dbg
+    assert sum(1 for r in ex.model.rows if r.checked) == 1
     ex.filters["f_mix"].setChecked(True)
     assert ex.proxy.rowCount() == 0          # nimic analizat încă
     ex.filters["f_mix"].setChecked(False)
@@ -428,7 +430,7 @@ def test_v094_library_explore_cleanup(app, tmp_path, monkeypatch):
     win.show()
     app.processEvents()
     lv = win.library
-    _wait(app, lv.task)
+    _settle(app, lv)
     lv.timer.stop()
     root = tmp_path / "Lib"
     (root / "House").mkdir(parents=True)
