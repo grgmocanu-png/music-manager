@@ -172,8 +172,10 @@ def test_main_window_smoke(app, tmp_path):
     ex.show_source(("lib", "all"))
     assert ex.model.rowCount() == len(lv.items)
     ex.table.selectRow(0)
+    _dbg = (ex.proxy.rowCount(), len(ex.table.selectionModel().selectedRows()), ex.table.currentIndex().row(),
+            [r.checked for r in ex.model.rows], ex.table.selectionMode(), ex.isVisible(), ex.table.isVisible())
     ex.toggle_checks()
-    assert sum(1 for r in ex.model.rows if r.checked) == 1
+    assert sum(1 for r in ex.model.rows if r.checked) == 1, (_dbg, [r.checked for r in ex.model.rows])
     ex.filters["f_mix"].setChecked(True)
     assert ex.proxy.rowCount() == 0          # nimic analizat încă
     ex.filters["f_mix"].setChecked(False)
