@@ -174,7 +174,15 @@ def test_main_window_smoke(app, tmp_path):
     from PySide6.QtCore import QItemSelectionModel
     ex.table.selectionModel().select(ex.proxy.index(0, 1),          # independent de tastele apăsate în test
                                      QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-    _dbg = (ex.proxy.rowCount(), len(ex._selected()), len(ex.table.selectionModel().selectedIndexes()))
+    from PySide6.QtCore import QModelIndex
+    try:
+        _acc = ex.proxy.filterAcceptsRow(0, QModelIndex())
+    except Exception as _e:  # noqa: BLE001
+        _acc = repr(_e)
+    _dbg = (ex.proxy.rowCount(), len(ex._selected()), len(ex.table.selectionModel().selectedIndexes()),
+            ex.proxy.words, ex.proxy.f_mix, ex.proxy.f_const, ex.proxy.f_four, ex.proxy.f_vocal, ex.proxy.f_rating,
+            ex.model.rowCount(), _acc, ex.proxy.sourceModel() is ex.model, ex.search.text(),
+            [b.isChecked() for b in ex.filters.values()], ex.source)
     ex.toggle_checks()
     assert sum(1 for r in ex.model.rows if r.checked) == 1, _dbg
     ex.filters["f_mix"].setChecked(True)
