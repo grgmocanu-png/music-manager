@@ -286,6 +286,9 @@ class SortFoldersDialog(QDialog):
         if QMessageBox.question(self, "Sortează", f"{verb} {len(plan)} fișiere în foldere sub\n{dest}?") \
                 != QMessageBox.Yes:
             return
+        if move:
+            from .player import free_files
+            free_files([s for s, _d in plan])
         from .jobs import Job
 
         def work(progress, cancelled):

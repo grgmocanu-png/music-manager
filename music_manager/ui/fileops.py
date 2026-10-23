@@ -16,6 +16,8 @@ def delete_in_background(title: str, paths: list[str], on_done):
     from .jobs import Job
 
     def work(progress, cancelled):
+        import time
+        time.sleep(0.4)          # playerul tocmai a eliberat fișierul (Windows îl mai ține o clipă)
         ok, no = split_by_bin(paths)
         done, errors = to_trash(ok)
         moved = []

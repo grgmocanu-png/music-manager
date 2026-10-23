@@ -343,10 +343,49 @@ class SettingsTab(QWidget):
                       "Muzica de audiție o lași pe dinafară, nu adaugi folderul ei.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray;")
+        # folderele ignorate (exporturile de playlisturi cu copii, alte foldere pe care nu le vrei scanate)
+        self.ign_list = QListWidget()
+        self.ign_list.setMaximumHeight(90)
+        raw = settings().value("library/ignored", []) or []
+        self.ign_list.addItems([p for p in (raw if isinstance(raw, list) else [raw]) if p])
+        b_iadd, b_irm = QPushButton("Ignoră un folder…"), QPushButton("Nu-l mai ignora")
+        b_iadd.clicked.connect(self._add_ignored)
+        b_irm.clicked.connect(self._remove_ignored)
+        ib = QVBoxLayout()
+        ib.addWidget(b_iadd)
+        ib.addWidget(b_irm)
+        ib.addStretch()
+        irow = QHBoxLayout()
+        irow.addWidget(self.ign_list, 1)
+        irow.addLayout(ib)
+        ihint = QLabel("Folderele ignorate nu intră în Bibliotecă, Curățenie (Dubluri) și „Toată muzica”. Exporturile "
+                       "făcute din pagina Export se ignoră singure (au un fișier „.manager-export”).")
+        ihint.setWordWrap(True)
+        ihint.setStyleSheet("color: gray;")
         lay = QVBoxLayout(box)
         lay.addLayout(row)
         lay.addWidget(hint)
+        lay.addSpacing(8)
+        lay.addWidget(QLabel("<b>Foldere ignorate</b>"))
+        lay.addLayout(irow)
+        lay.addWidget(ihint)
         return box
+
+    def _ignored_save(self):
+        settings().setValue("library/ignored", [self.ign_list.item(i).text() for i in range(self.ign_list.count())])
+        self.library_changed.emit()
+
+    def _add_ignored(self):
+        d = QFileDialog.getExistingDirectory(self, "Ce folder ignor la scanare?")
+        if d:
+            self.ign_list.addItem(os.path.normpath(d))
+            self._ignored_save()
+
+    def _remove_ignored(self):
+        it = self.ign_list.currentItem()
+        if it:
+            self.ign_list.takeItem(self.ign_list.row(it))
+            self._ignored_save()
 
     def _add_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Alege un folder cu muzică")

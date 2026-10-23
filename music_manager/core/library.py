@@ -92,10 +92,27 @@ def track_from_file(path: str) -> Track:
     return t
 
 
-def find_audio_files(folders: Iterable[str]) -> list[str]:
+EXPORT_MARKER = ".manager-export"      # pus de Export: folderele astea nu intră în Bibliotecă / Curățenie
+
+
+def ignored_folders() -> list[str]:
+    """Foldere ignorate la scanare, puse de mână în Setări (pe lângă cele cu marcajul de export)."""
+    try:
+        from PySide6.QtCore import QSettings
+        raw = QSettings().value("library/ignored", []) or []
+        return [os.path.normcase(os.path.normpath(p)) for p in (raw if isinstance(raw, list) else [raw]) if p]
+    except Exception:
+        return []
+
+
+def find_audio_files(folders: Iterable[str], ignore_exports: bool = True) -> list[str]:
     out = []
+    skip = ignored_folders() if ignore_exports else []
     for folder in folders:
         for root, dirs, files in os.walk(folder):
+            if ignore_exports and (EXPORT_MARKER in files or os.path.normcase(os.path.normpath(root)) in skip):
+                dirs[:] = []                   # export de playlisturi (copii): nu-l scanăm
+                continue
             # ignorăm folderele ascunse și pe cel de dubluri mutate
             dirs[:] = [d for d in dirs if not d.startswith(".") and d != DUPLICATES_FOLDER]
             for f in files:
@@ -144,8 +161,8 @@ class LibraryCache:
 def scan(folders: Iterable[str], cache: LibraryCache | None = None,
          progress: Callable[[int, int], None] | None = None,
          cancelled: Callable[[], bool] | None = None,
-         workers: int = 8) -> list[Track]:
-    files = find_audio_files(folders)
+         workers: int = 8, ignore_exports: bool = True) -> list[Track]:
+    files = find_audio_files(folders, ignore_exports)
     total = len(files)
     results: list[Track | None] = [None] * total
     todo = []

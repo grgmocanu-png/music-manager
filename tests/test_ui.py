@@ -441,7 +441,7 @@ def test_v094_library_explore_cleanup(app, tmp_path, monkeypatch):
     lv._rebuild_items()
     lv.rebuild_tree()
     # bara de sus: ordinea fluxului; Conversia e în Curățenie; Setări din rotiță
-    assert [a for _t, a in win.PAGES][:4] == ["download", "library", "cleanup", "explore"]
+    assert [a for _t, a in win.PAGES][:5] == ["download", "cleanup", "library", "explore", "export"]
     assert "convert" not in win._nav_buttons and "settings_tab" in win._nav_buttons
     win._go_name("convert")
     assert win._nav_buttons["cleanup"].isChecked()
@@ -531,5 +531,81 @@ def test_v094_library_explore_cleanup(app, tmp_path, monkeypatch):
         time.sleep(0.05)
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     tf.close()
+    win.close()
+    app.processEvents()
+
+
+def test_v095_export_family_menus(app, tmp_path, monkeypatch):
+    import json as _json
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    from music_manager.core import library as lib
+    from music_manager.ui.main_window import MainWindow
+    win = MainWindow()
+    win.show()
+    lv = win.library
+    _settle(app, lv)
+    lv.timer.stop()
+    (tmp_path / "src").mkdir()
+    tracks = _tracks(tmp_path / "src")
+    lv._tracks = tracks
+    lv.collections = []
+    lv._rebuild_items()
+    lv.rebuild_tree()
+    # ordinea: Playlisturi › Curățenie › Bibliotecă · Explore · Export
+    assert [a for _t, a in win.PAGES][:5] == ["download", "cleanup", "library", "explore", "export"]
+    from PySide6.QtWidgets import QLabel
+    assert any(w.text().startswith("1. ") for w in win.cleanup.findChildren(QLabel))
+    assert hasattr(win.download, "b_verify_all")
+    # Family a ta, pe mai multe piese; sugestia din Taguri online nu se scrie singură
+    sel = lv.items[:2]
+    lv.set_family(sel, "Disco")
+    assert all(i.family == "Disco" and i.family_src == "manual" for i in sel)
+    lv.set_family(sel, "")
+    assert all(i.family_src != "manual" for i in sel)
+    sel[0].suggest = "Techno"
+    lv.accept_suggestion([sel[0]])
+    assert sel[0].family == "Techno" and lv.db.extra(sel[0].path).user_family == "Techno"
+    _t, nofam = lv.items_for(("nofam",))
+    assert all(not i.family for i in nofam)
+    # meniurile cu bife rămân deschise
+    from music_manager.ui.combo_cells import StayOpenMenu
+    assert isinstance(lv.fam_menu, StayOpenMenu) and isinstance(lv.genre_menu, StayOpenMenu)
+    # player: piesa care cântă se eliberează înainte de ștergere / mutare
+    lv.player.path = tracks[0].path
+    lv.player.free([tracks[0].path])
+    assert lv.player.path == ""
+    # Export: foldere pe playlist (copii), M3U / NML / XML, marcaj ignorat la scanare
+    p = lv.db.new_playlist("Deep warm-up")
+    p.tracks = [t.path for t in tracks[:2]]
+    lv.rebuild_tree()
+    ex = win.export
+    ex.refresh()
+    dest = tmp_path / "USB"
+    ex.dest.setText(str(dest))
+    ex.export({_json.dumps(["pl", p.id])})
+    _wait(app, ex.task)
+    app.processEvents()
+    folder = dest / "Deep warm-up"
+    assert sorted(os.listdir(folder)) == sorted(os.path.basename(t.path) for t in tracks[:2])
+    pl_dir = dest / "_Playlisturi"
+    assert (pl_dir / "Deep warm-up.m3u8").exists() and (pl_dir / "Deep warm-up.nml").exists()
+    assert (pl_dir / "rekordbox.xml").exists() and (dest / lib.EXPORT_MARKER).exists()
+    m3u = (pl_dir / "Deep warm-up.m3u8").read_text(encoding="utf-8")
+    assert "Deep warm-up" in m3u and str(tmp_path / "src") not in m3u          # trimite la copii, relativ
+    assert lib.find_audio_files([str(tmp_path)]) and not any(str(dest) in f for f in lib.find_audio_files([str(tmp_path)]))
+    # a doua oară: nimic de copiat; „Sincronizează din nou” folosește ultimul export
+    assert ex.b_again.isEnabled()
+    ex.export_again()
+    _wait(app, ex.task)
+    app.processEvents()
+    from music_manager.ui.jobs import manager
+    import time
+    end = time.time() + 20
+    while manager().active() and time.time() < end:
+        app.processEvents()
+        time.sleep(0.05)
     win.close()
     app.processEvents()

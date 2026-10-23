@@ -9,7 +9,7 @@ import webbrowser
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 
-from PySide6.QtCore import QDate, QObject, Qt, Signal
+from PySide6.QtCore import QDate, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
@@ -367,6 +367,11 @@ class PlaylistsPanel(TrackTableBase):
         ll.addWidget(QLabel("<b>Playlisturile tale</b>"))
         ll.addLayout(add_row)
         ll.addWidget(scroll, 1)
+        self.b_verify_all = QPushButton("Verifică toate")
+        self.b_verify_all.setToolTip("Verifică pe rând toate playlisturile: ce ai, ce lipsește, ce a fost scos. "
+                                     "Nu descarcă nimic.")
+        self.b_verify_all.clicked.connect(self.verify_all)
+        ll.addWidget(self.b_verify_all)
         ll.addWidget(self.dest_label)
 
         # --- dreapta ---
@@ -554,6 +559,50 @@ class PlaylistsPanel(TrackTableBase):
         self.fill_table(auto_check=True)
 
     # --- verificare ---
+    def verify_all(self):
+        """Verifică toate playlisturile, unul după altul (ca o singură serie în Activități)."""
+        if getattr(self, "_verify_queue", None):
+            self._verify_queue = []                    # al doilea click = oprește seria
+            self.b_verify_all.setText("Verifică toate")
+            return
+        ids = [p.id for p in self.store.items]
+        sp_ok = True
+        if any(p.source != "youtube" for p in self.store.items):
+            client = spotify_client()
+            sp_ok = bool(client and client.logged_in)
+        skipped = [p.name for p in self.store.items if p.source != "youtube" and not sp_ok]
+        ids = [p.id for p in self.store.items if p.source == "youtube" or sp_ok]
+        if not ids:
+            QMessageBox.information(self, "Verifică toate", "Nu am ce verifica" +
+                                    (" — conectează Spotify din Setări." if skipped else "."))
+            return
+        if skipped:
+            QMessageBox.information(self, "Verifică toate", f"Sar peste {len(skipped)} playlisturi Spotify: "
+                                    "nu ești conectat (Setări → Conturi).")
+        self._verify_queue = ids
+        self._verify_total = len(ids)
+        self._verify_next()
+
+    def _verify_next(self):
+        q = getattr(self, "_verify_queue", [])
+        if not q:
+            self.b_verify_all.setText("Verifică toate")
+            self.refresh_buttons()
+            return
+        if (self.task and self.task.isRunning()) or self.runner.busy():
+            QTimer.singleShot(1000, self._verify_next)
+            return
+        pid = q.pop(0)
+        done = self._verify_total - len(q)
+        self.b_verify_all.setText(f"Verific {done} / {self._verify_total}… (click = oprește)")
+        before = self.task
+        self.check(pid)
+        if self.task is not None and self.task is not before:
+            self.task.succeeded.connect(lambda *_: QTimer.singleShot(300, self._verify_next))
+            self.task.failed.connect(lambda *_: QTimer.singleShot(300, self._verify_next))
+        else:
+            QTimer.singleShot(300, self._verify_next)
+
     def check(self, pid: str):
         if (self.task and self.task.isRunning()) or self.runner.busy():
             QMessageBox.information(self, "Ocupat", "Aștept să se termine operația în curs.")

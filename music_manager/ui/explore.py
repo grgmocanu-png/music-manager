@@ -475,6 +475,8 @@ class ExploreView(QWidget):
         self.table.setModel(self.proxy)
         # dublu click = play; editarea (Mix, Folosire) cu F2
         self.table.setEditTriggers(QAbstractItemView.EditKeyPressed)
+        from .combo_cells import setup_view
+        setup_view(self.table)
         self.table.clicked.connect(self._cell_clicked)
         self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -503,10 +505,17 @@ class ExploreView(QWidget):
 
         class UsePill(PillDelegate):
             def createEditor(self, parent, option, index):
-                cb = QComboBox(parent)
-                cb.addItems(["(din analiză)"] + USES)
-                cb.activated.connect(lambda _i=0, cb=cb: (self.commitData.emit(cb), self.closeEditor.emit(cb)))
-                return cb
+                from .combo_cells import make_combo
+                return make_combo(parent, ["(din analiză)"] + USES, delegate=self)
+
+            def paint(self, p, opt, index):
+                PillDelegate.paint(self, p, opt, index)
+                from .combo_cells import paint_arrow
+                paint_arrow(p, opt, index)
+
+            def editorEvent(self, event, model, option, index):
+                from .combo_cells import arrow_click
+                return arrow_click(self, event, option, index) or super().editorEvent(event, model, option, index)
 
             def setEditorData(self, editor, index):
                 editor.setCurrentText(index.data(Qt.EditRole) or "(din analiză)")
@@ -817,8 +826,9 @@ class ExploreView(QWidget):
         cache = lib.LibraryCache(os.path.join(data_dir(), "explore_cache.json"))
 
         def work(progress, cancelled):
+            # un folder adăugat de tine în Explore se citește chiar dacă e un export (ca să-l poți asculta)
             return lib.scan([d], cache, lambda a, b: progress(a, b, f"Citesc {os.path.basename(d)}: {a}/{b}"),
-                            cancelled)
+                            cancelled, ignore_exports=d not in self.folders())
 
         job = Job(f"Explore: citesc {os.path.basename(d) or d}", work, writes=False)
         job.progress.connect(lambda a, b, txt: self.status.setText(txt))
@@ -858,7 +868,8 @@ class ExploreView(QWidget):
         self.proxy.invalidateFilter()
 
     def _header_menu(self, pos):
-        m = QMenu(self)
+        from .combo_cells import StayOpenMenu
+        m = StayOpenMenu(self)
         m.addAction("Coloane afișate:").setEnabled(False)
         for i, (title, key) in enumerate(COLS):
             if key == "check":
@@ -1111,6 +1122,21 @@ class ExploreView(QWidget):
             write_tags_in_background(self, jobs, None, f"Scriu ratingul ({n}★)")
         self.status.setText(f"Rating {('★' * n) or '0'} la {len(rows)} piese (scris în fișier).")
 
+    def _free_player(self, paths):
+        gone = {_norm(p) for p in paths}
+
+        def nxt():
+            rows = [self._row_at(self.proxy.index(i, 0)) for i in range(self.proxy.rowCount())]
+            cur = _norm(self.player.path)
+            idx = next((i for i, r in enumerate(rows) if r and r.path and _norm(r.path) == cur), -1)
+            for r in rows[idx + 1:] + rows[:max(0, idx)]:
+                if r and r.path and not r.missing and _norm(r.path) not in gone:
+                    return lambda r=r: self.play(r)
+            return None
+        self.player.free(paths, nxt)
+        if self.player.path and _norm(self.player.path) in gone:
+            self.player.release()
+
     def reset_manual(self, rows):
         for r in rows:
             manual().pop(_norm(r.path), None)
@@ -1250,6 +1276,8 @@ class ExploreView(QWidget):
                   "în Traktor va trebui să le regăsești cu Relocate.")
         if confirm and QMessageBox.question(self, verb, q) != QMessageBox.Yes:
             return
+        if move:
+            self._free_player([s for s, _d in plan])
         from .jobs import Job
 
         def work(progress, cancelled):
@@ -1325,11 +1353,14 @@ class ExploreView(QWidget):
         q += "\n\nPe discurile fără Coș (stick, card, rețea) nu le șterg: le mut în „_De șters” lângă ele."
         if QMessageBox.question(self, "Șterge", q) != QMessageBox.Yes:
             return
+        self._free_player([r.path for r in rows])
         from ..core.trash import split_by_bin, to_trash
         from .jobs import Job
         paths = [r.path for r in rows]
 
         def work(progress, cancelled):
+            import time
+            time.sleep(0.4)      # playerul tocmai a eliberat fișierul
             ok, no = split_by_bin(paths)
             done, errors = to_trash(ok)
             moved = []

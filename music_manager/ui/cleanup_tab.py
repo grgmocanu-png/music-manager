@@ -75,6 +75,7 @@ class CleanupTab(QWidget):
         cards = QGridLayout()
         cards.setHorizontalSpacing(14)
         for col, (key, title, text, btn, fn, color) in enumerate(steps):
+            title = f"{col + 1}. {title}"       # ordinea recomandată (le rulezi tu, când vrei)
             card = QFrame()
             card.setObjectName("card")
             cl = QVBoxLayout(card)

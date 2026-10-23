@@ -35,7 +35,8 @@ COLS = [("", "play"), ("#", "num"), ("Artist", "artist"), ("Title", "title"), ("
         ("Comments", "style"), ("Role", "role"), ("Energy", "energy"), ("BPM", "bpm"), ("Key", "key"), ("Year", "year"),
         ("Rating", "rating"), ("Duration", "duration"), ("Label", "label"), ("Date Added", "added"),
         ("Quality", "quality"), ("BPM / Key Source", "src"), ("Playlists", "playlists"), ("Folder", "folder"),
-        ("Date Analyzed", "analyzed"), ("Cover", "cover"), ("Mood", "mood"), ("Grouping", "grouping")]
+        ("Date Analyzed", "analyzed"), ("Cover", "cover"), ("Mood", "mood"), ("Grouping", "grouping"),
+        ("Sugestie", "suggest")]
 EDITABLE = {"artist", "title", "family", "genre", "style", "role", "energy", "bpm", "key", "year", "label",
             "mood", "grouping"}
 DEFAULT_HIDDEN = {"src", "folder", "quality"}
@@ -193,6 +194,8 @@ class ItemModel(QAbstractTableModel):
                 return t.display_title
             if col == "family":
                 return it.family
+            if col == "suggest":
+                return f"✓ {it.suggest}" + (f" · {it.suggest_genre}" if it.suggest_genre else "") if it.suggest else ""
             if col == "playlists":
                 return ", ".join(it.playlists)
             if col == "genre":
@@ -275,8 +278,19 @@ class ItemModel(QAbstractTableModel):
             if col == "key" and it.camelot:
                 return QBrush(key_color(it.camelot))
             if col == "family" and it.family:
+                if it.family_src != "manual":
+                    return QBrush(QColor("#8f959d"))        # dedusă din gen, nu pusă de tine
                 return QBrush(family_color(it.family))
+            if col == "suggest" and it.suggest:
+                return QBrush(QColor("#5fb3a6"))
         if role == Qt.ToolTipRole:
+            if col == "family":
+                if it.family_src == "manual":
+                    return "Familie pusă de tine."
+                return ("Dedusă din genul din tag (gri). Alege din ▾ sau click dreapta → Family ca s-o fixezi."
+                        if it.family else "Fără familie. Alege din ▾ sau click dreapta → Family.")
+            if col == "suggest" and it.suggest:
+                return "Găsită de Taguri online. Click pe ✓ ca s-o accepți ca familie (nu se scrie nimic singur)."
             if it.offline:
                 return "Discul pe care e piesa nu e conectat: " + it.path
             if it.missing:
@@ -308,26 +322,47 @@ class ItemModel(QAbstractTableModel):
         return None
 
 
+COMBO_COLS = ("role", "family", "genre", "key")
+
+
 class EditDelegate(QStyledItemDelegate):
-    """Rol și Familie se aleg dintr-o listă (se poate și scrie); restul se scriu direct."""
+    """Role, Family, Genre și Key se aleg dintr-o listă (Family / Genre se pot și scrie); restul se scriu direct.
+    Săgeata ▾ apare la hover; click pe ea deschide lista direct."""
 
     def createEditor(self, parent, option, index):
+        from .combo_cells import make_combo
         col = COLS[index.column()][1]
-        if col in ("role", "family"):
-            cb = QComboBox(parent)
-            cb.setEditable(col == "family")
+        if col in COMBO_COLS:
             if col == "role":
-                cb.addItems([""] + list(ldb.ROLES))
+                items = [""] + list(ldb.ROLES)
+            elif col == "family":
+                items = [""] + all_families()
+            elif col == "genre":
+                lv = _LIVE.get("library")
+                items = [""] + [g for g, _n in ldb.genre_counts(lv.items if lv else []) if g]
             else:
-                cb.addItems([""] + all_families())
-            # alegerea din listă se salvează imediat (nu doar când ieși din celulă)
-            cb.activated.connect(lambda _i=0, cb=cb: (self.commitData.emit(cb), self.closeEditor.emit(cb)))
-            return cb
+                items = [""] + [f"{n}{l}" for n in range(1, 13) for l in "AB"]
+            return make_combo(parent, items, editable=col in ("family", "genre"), delegate=self)
         return super().createEditor(parent, option, index)
+
+    def paint(self, p, opt, index):
+        QStyledItemDelegate.paint(self, p, opt, index)
+        if COLS[index.column()][1] in COMBO_COLS:
+            from .combo_cells import paint_arrow
+            paint_arrow(p, opt, index)
+
+    def editorEvent(self, event, model, option, index):
+        from .combo_cells import arrow_click
+        if COLS[index.column()][1] in COMBO_COLS and arrow_click(self, event, option, index):
+            return True
+        return super().editorEvent(event, model, option, index)
 
     def setEditorData(self, editor, index):
         if isinstance(editor, QComboBox):
-            editor.setCurrentText(index.data(Qt.EditRole) or "")
+            v = index.data(Qt.EditRole) or ""
+            if v and editor.findText(v) < 0:
+                editor.insertItem(1, v)          # valoarea de acum rămâne aleasă (nu se pierde la ieșire)
+            editor.setCurrentText(v)
             return
         super().setEditorData(editor, index)
 
@@ -371,7 +406,11 @@ class LibPill(EditDelegate):
         self.kind = kind
 
     from .delegates import PillDelegate as _P
-    paint = _P.paint
+
+    def paint(self, p, opt, index):
+        self._P.paint(self, p, opt, index)
+        from .combo_cells import paint_arrow
+        paint_arrow(p, opt, index)
 
 
 class FilterProxy(QSortFilterProxyModel):
@@ -458,7 +497,10 @@ class TrackTable(QTableView):
         self.setItemDelegateForColumn(keys.index("key"), self._pill_k)
         self.setShowGrid(False)
         # editare: click pe o celulă a rândului deja selectat, sau F2
-        self.setEditTriggers(QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
+        # editarea pornește doar cu F2 sau din săgeata ▾ (click-ul doar selectează, dublu click = play)
+        self.setEditTriggers(QAbstractItemView.EditKeyPressed)
+        from .combo_cells import setup_view
+        setup_view(self)
         self.setSortingEnabled(True)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -522,7 +564,8 @@ class TrackTable(QTableView):
 
     def _header_menu(self, pos):
         """Click dreapta pe antet: alegi ce coloane vezi (ordinea o schimbi trăgând de antet)."""
-        m = QMenu(self)
+        from .combo_cells import StayOpenMenu
+        m = StayOpenMenu(self)
         m.addAction("Coloane afișate (trage de antet ca să schimbi ordinea):").setEnabled(False)
         for i, (title, key) in enumerate(COLS):
             if key in ("play", "num"):
@@ -719,13 +762,14 @@ class LibraryView(QWidget):
         self.fam_btn = QToolButton()
         self.fam_btn.setText("Familie: toate ▾")
         self.fam_btn.setPopupMode(QToolButton.InstantPopup)
-        self.fam_menu = QMenu(self.fam_btn)
+        from .combo_cells import StayOpenMenu
+        self.fam_menu = StayOpenMenu(self.fam_btn)
         self.fam_btn.setMenu(self.fam_menu)
         self.fam_btn.setStyleSheet("font-weight: bold;")
         self.genre_btn = QToolButton()
         self.genre_btn.setText("Gen: toate ▾")
         self.genre_btn.setPopupMode(QToolButton.InstantPopup)
-        self.genre_menu = QMenu(self.genre_btn)
+        self.genre_menu = StayOpenMenu(self.genre_btn)
         self.genre_btn.setMenu(self.genre_menu)
         self.bpm_lo, self.bpm_hi = QSpinBox(), QSpinBox()
         for s in (self.bpm_lo, self.bpm_hi):
@@ -793,7 +837,7 @@ class LibraryView(QWidget):
 
         self.table = TrackTable()
         self.table.doubleClicked.connect(lambda ix: self.play(self.table.item_at(ix)))
-        self.table.model_.on_edit = self.edit_cell
+        self.table.model_.on_edit = self._edit_cell_multi
         self.table.clicked.connect(self._table_clicked)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
@@ -993,9 +1037,10 @@ class LibraryView(QWidget):
 
     def _annotate(self, items):
         """Familia de gen și playlisturile în care apare fiecare piesă."""
-        from .dialogs import genre_mapper
+        from .dialogs import genre_mapper, load_tag_results
         mapper = genre_mapper()
         ranges = bpm_ranges()
+        sugg = load_tag_results()          # ce au găsit Taguri online (propuneri, nu se scriu singure)
         member: dict[str, list[str]] = {}
         for p in self.db.playlists:
             if p.kind == "manual":
@@ -1016,8 +1061,15 @@ class LibraryView(QWidget):
             if not fam:
                 style = it.style.split(",")[0].strip()
                 fam = mapper.family_of(style) if style else ""
-            it.family = self.db.extra(it.path).user_family if (not it.missing and not it.offline and
-                                                                 self.db.extra(it.path).user_family) else fam
+            manual = self.db.extra(it.path).user_family if not (it.missing or it.offline) else ""
+            it.family = manual or fam
+            it.family_src = "manual" if manual else ("gen" if fam else "")
+            s = sugg.get(djc.norm_path(it.path))
+            if s and s.get("genre") and s["genre"] != it.family:
+                it.suggest = s["genre"]
+                it.suggest_genre = ", ".join((s.get("styles") or [])[:1])
+            else:
+                it.suggest, it.suggest_genre = "", ""
             it.bpm_suggest = ldb.bpm_suggestion(it.bpm, it.family, ranges) if it.bpm_src != "Manual" else 0.0
             it.playlists = member.get(djc.norm_path(it.path), [])
 
@@ -1123,6 +1175,12 @@ class LibraryView(QWidget):
         if ("all",) in expanded or not expanded:
             top.setExpanded(True)
         add(None, f"🆕 Noi — folderul de download ({n_new})", ("new",))
+        n_nofam = sum(1 for it in self.items if not it.family)
+        if n_nofam:
+            add(None, f"◌ Fără Family ({n_nofam})", ("nofam",))
+        n_sug = sum(1 for it in self.items if it.suggest)
+        if n_sug:
+            add(None, f"✓ Cu sugestie de Family ({n_sug})", ("sugg",))
         missing = self._missing_items()
         if missing:
             add(None, f"✗ Lipsă / offline ({len(missing)})", ("missing",))
@@ -1244,6 +1302,10 @@ class LibraryView(QWidget):
             return "Lipsă / offline (din playlisturi)", self._missing_items()
         if kind == "dir":
             return f"📁 {view[1]}", self._dir_items(view[1])
+        if kind == "nofam":
+            return "Fără Family", [it for it in self.items if not it.family]
+        if kind == "sugg":
+            return "Cu sugestie de Family (Taguri online)", [it for it in self.items if it.suggest]
         if kind == "vocal":
             return "Acapella & vocal (după nume și taguri)", self._vocal_items()
         if kind == "bpmcheck":
@@ -1297,6 +1359,9 @@ class LibraryView(QWidget):
             act.setChecked(f in current)
             act.toggled.connect(self.apply_filters)
             self.fam_menu.addAction(act)
+        if len(counts) > 10:
+            from .combo_cells import add_search
+            add_search(self.fam_menu, "Caută o familie…")
 
     def _clear_families(self):
         for a in self.fam_menu.actions():
@@ -1323,6 +1388,9 @@ class LibraryView(QWidget):
             act.setToolTip(f"{n} piese")
             act.toggled.connect(self.apply_filters)
             self.genre_menu.addAction(act)
+        if len(counts) > 10:
+            from .combo_cells import add_search
+            add_search(self.genre_menu, "Caută un gen…")
 
     def _clear_genres(self):
         for a in self.genre_menu.actions():
@@ -1360,6 +1428,46 @@ class LibraryView(QWidget):
     def _table_clicked(self, ix):
         if COLS[ix.column()][1] == "play":
             self.play(self.table.item_at(ix))
+        elif COLS[ix.column()][1] == "suggest":
+            it = self.table.item_at(ix)
+            if it.suggest:
+                sel = self.table.selected()
+                self.accept_suggestion(sel if any(s is it for s in sel) else [it])
+
+    # ===== Family =====
+    def set_family(self, items, fam):
+        """Family pusă de tine (pe toate piesele selectate). Gol = revine la cea dedusă din gen."""
+        for it in items:
+            if it.missing or it.offline:
+                continue
+            self.db.extra(it.path).user_family = fam
+        self.db.save()
+        self._annotate(items)
+        for it in items:
+            self.table.model_.refresh_row(it.path)
+        self._fill_family_menu()
+        self.rebuild_tree()
+        self.status.setText(f"Family „{fam or 'din gen'}” la {len(items)} piese.")
+
+    def accept_suggestion(self, items):
+        items = [i for i in items if i.suggest]
+        if not items:
+            return
+        jobs = []
+        for it in items:
+            self.db.extra(it.path).user_family = it.suggest
+            if not it.track.genre.strip():          # genul gol: îl completăm cu familia (convenția Manager)
+                jobs.append((it.path, {"genre": it.suggest}, None))
+                it.track.genre = it.suggest
+        self.db.save()
+        self._annotate(items)
+        for it in items:
+            self.table.model_.refresh_row(it.path)
+        if jobs:
+            write_tags_in_background(self, jobs, None, "Scriu genul acceptat")
+        self._fill_family_menu()
+        self.rebuild_tree()
+        self.status.setText(f"Am acceptat sugestia la {len(items)} piese.")
 
     def play(self, it: ldb.LibItem):
         if it.missing or it.offline:
@@ -1633,6 +1741,15 @@ class LibraryView(QWidget):
             m.addAction("Caută piesele lipsă într-un folder…", lambda: self.relocate([i.path for i in lost]))
             m.addSeparator()
         m.addAction("▶ Redă", lambda: self.play(sel[0]))
+        fm = m.addMenu(f"Family ({len(sel)} piese)" if len(sel) > 1 else "Family")
+        for f in all_families():
+            fm.addAction(f, lambda f=f: self.set_family(sel, f))
+        fm.addSeparator()
+        fm.addAction("Altă familie…", lambda: (lambda r: self.set_family(sel, r[0].strip()) if r[1] and r[0].strip()
+                                                else None)(QInputDialog.getText(self, "Family", "Numele familiei:")))
+        fm.addAction("Revino la cea dedusă din gen", lambda: self.set_family(sel, ""))
+        if any(i.suggest for i in sel):
+            m.addAction("✓ Acceptă sugestia (Family)", lambda: self.accept_suggestion(sel))
         add = m.addMenu("Adaugă în playlist")
         paths = [i.path for i in sel]
         sugg, create = self._suggest_playlists(sel, col_key)
@@ -1703,6 +1820,20 @@ class LibraryView(QWidget):
     TAG_FIELDS = {"artist": "artist", "title": "title", "genre": "genre", "style": "comment",
                   "year": "year", "label": "label", "mood": "mood", "grouping": "grouping"}
 
+    def _edit_cell_multi(self, it, col, value) -> bool:
+        """Dacă piesa editată face parte dintr-o selecție de mai multe, valoarea se pune la toate cele selectate."""
+        sel = self.table.selected()
+        if len(sel) > 1 and any(s is it for s in sel):
+            ok = self.edit_cell(it, col, value)
+            if ok:
+                for other in sel:
+                    if other is not it and not (other.missing or other.offline):
+                        self.edit_cell(other, col, value)
+                        self.table.model_.refresh_row(other.path)
+                self.status.setText(f"Am pus „{value}” la {len(sel)} piese.")
+            return ok
+        return self.edit_cell(it, col, value)
+
     def edit_cell(self, it, col, value) -> bool:
         """Ai modificat o celulă. Tagurile se scriu în fișier (în fundal); restul rămâne în aplicație."""
         e = self.db.extra(it.path)
@@ -1762,6 +1893,22 @@ class LibraryView(QWidget):
                             f"„{it.track.artist} - {it.track.display_title}”.")
         return True
 
+    def _free_player(self, paths):
+        """Piesa care cântă e printre cele șterse / mutate: trecem la următoarea din listă (care rămâne)."""
+        gone = {djc.norm_path(p) for p in paths}
+
+        def nxt():
+            vis = self.table.visible()
+            cur = djc.norm_path(self.player.path)
+            idx = next((i for i, it in enumerate(vis) if djc.norm_path(it.path) == cur), -1)
+            for it in vis[idx + 1:] + vis[:max(0, idx)]:
+                if djc.norm_path(it.path) not in gone and not (it.missing or it.offline):
+                    return lambda it=it: self.play(it)
+            return None
+        self.player.free(paths, nxt)
+        if self.player.path and djc.norm_path(self.player.path) in gone:
+            self.player.release()
+
     def sort_into_folders(self, items):
         from .sort_tool import items_from_library, open_sort
         open_sort(items_from_library(items), self, self, self.title.text())
@@ -1782,6 +1929,7 @@ class LibraryView(QWidget):
         q += "\n\nPe discurile fără Coș (stick, card, rețea) nu le șterg definitiv: le mut în „_De șters” lângă ele."
         if QMessageBox.question(self, "Șterge", q) != QMessageBox.Yes:
             return
+        self._free_player([i.path for i in items])
         from .fileops import delete_in_background, delete_summary
 
         def done(ok, moved, errors):

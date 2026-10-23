@@ -214,6 +214,8 @@ class PlanTable(QWidget):
 def _run_plan(parent, plan, step, title, on_done):
     """Aplică planul ca activitate; marchează pasul în istoric pentru ce s-a făcut și ce era deja corect."""
     from .dialogs import rename_in_background
+    from .player import free_files
+    free_files([p.src for p in plan if p.status == "ok"])      # piesa care cântă nu blochează redenumirea
     same = [p.src for p in plan if p.status == "same"]
 
     def done_cb():
@@ -536,6 +538,8 @@ class DuplicatesDialog(QDialog):
                 "Windows le-ar șterge definitiv. Pe acestea le mut în folderul „_Dubluri” de lângă ele.")
         if QMessageBox.question(self, "Confirmare", msg) != QMessageBox.Yes:
             return
+        from .player import free_files
+        free_files(list(paths) + list(to_move))
         from .jobs import Job
         from .library_tab import report
         parent = self.parent()

@@ -18,8 +18,8 @@ from .settings_tab import SettingsTab
 class MainWindow(QMainWindow):
     # ordinea fluxului: Playlisturi › Bibliotecă › Curățenie; Explore separat; Setări din rotiță.
     # Conversia e un pas din Curățenie (pagină fără buton propriu în bară).
-    PAGES = [("Playlisturi", "download"), ("Bibliotecă", "library"), ("Curățenie", "cleanup"),
-             ("Explore", "explore"), ("Setări", "settings_tab"), ("Conversie", "convert")]
+    PAGES = [("Playlisturi", "download"), ("Curățenie", "cleanup"), ("Bibliotecă", "library"),
+             ("Explore", "explore"), ("Export", "export"), ("Setări", "settings_tab"), ("Conversie", "convert")]
     NAV_OF = {"convert": "cleanup"}          # ce buton e aprins când ești pe o pagină fără buton
 
     def __init__(self):
@@ -35,6 +35,8 @@ class MainWindow(QMainWindow):
         self.cleanup.library = self.library
         from .explore import ExploreView
         self.explore = ExploreView(self.state, self.library, self.download, self)
+        from .export_tab import ExportTab
+        self.export = ExportTab(self.state, self.library, self)
         self.settings_tab = SettingsTab(self.state, self)
         self.settings_tab.spotify_changed.connect(self.download.refresh_buttons)
         self.settings_tab.library_changed.connect(lambda: self.library.reload())
@@ -84,6 +86,9 @@ class MainWindow(QMainWindow):
             if attr == "explore":
                 tl.addSpacing(40)                      # Explore: separat, în alt stil
                 tl.addWidget(b)
+                tl.addSpacing(10)
+            elif attr == "export":
+                tl.addWidget(b)
                 tl.addStretch()
                 from .jobs import JobsButton
                 self.jobs_button = JobsButton(self)
@@ -95,7 +100,7 @@ class MainWindow(QMainWindow):
                 tl.addSpacing(8)
             else:
                 tl.addWidget(b)
-                if attr != "cleanup":
+                if attr != "library":
                     arrow = QLabel("›")
                     arrow.setObjectName("navarrow")
                     tl.addWidget(arrow)
@@ -137,6 +142,8 @@ class MainWindow(QMainWindow):
         self.download.refresh_buttons()
         if attr == "explore":
             self.explore.rebuild_tree()
+        if attr == "export":
+            self.export.refresh()
         if attr in ("library", "explore"):
             # același player în ambele pagini: muzica merge mai departe, iar piesa e selectată
             getattr(self, attr).attach_player()
@@ -184,7 +191,8 @@ class MainWindow(QMainWindow):
         close_all()
         settings().setValue("window/geometry", self.saveGeometry())
         self.library.shutdown()
-        for tab in (self.download, self.cleanup, self.convert, self.library, self.explore, self.settings_tab):
+        for tab in (self.download, self.cleanup, self.convert, self.library, self.explore, self.export,
+                    self.settings_tab):
             task = getattr(tab, "task", None)
             if task and task.isRunning():
                 task.cancel()

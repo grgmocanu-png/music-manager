@@ -149,6 +149,9 @@ class LibItem:
     date_added: str = ""
     in_traktor: bool = False
     family: str = ""
+    family_src: str = ""          # „manual” = pusă de tine · „gen” = dedusă din genul din tag
+    suggest: str = ""             # familia găsită online (Taguri online), dacă diferă
+    suggest_genre: str = ""
     playlists: list = field(default_factory=list)
     drops: list = field(default_factory=list)
     missing: bool = False

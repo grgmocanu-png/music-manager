@@ -148,12 +148,25 @@ class WaveformWidget(QWidget):
             p.drawText(QPointF(min(hx + 4, w - 40), h - 4), fmt_duration(self.hover * self.duration))
 
 
+_PANELS: list = []
+
+
+def free_files(paths) -> None:
+    """Eliberează fișierele de orice player (fără „următoarea”) — pentru Curățenie, Conversie etc."""
+    for p in list(_PANELS):
+        try:
+            p.free(paths)
+        except RuntimeError:
+            _PANELS.remove(p)
+
+
 class PlayerPanel(QWidget):
     """Bara de jos din Bibliotecă."""
     request_next = Signal(int)          # +1 / -1
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        _PANELS.append(self)
         self.path = ""
         self.duration = 0.0
         self.wave = WaveformWidget()
@@ -355,6 +368,31 @@ class PlayerPanel(QWidget):
     def stop(self):
         if self.player:
             self.player.stop()
+
+    def release(self):
+        """Oprește și eliberează fișierul (ca să poată fi șters / mutat / redenumit)."""
+        if self.player:
+            self.player.stop()
+            self.player.setSource(QUrl())
+        self.path = ""
+        self.title.setText("—")
+        self.info.setText("")
+
+    def free(self, paths, next_path_fn=None) -> None:
+        """Dacă piesa care cântă e printre `paths`: trece la următoarea (next_path_fn() → căutată în listă,
+        sau None) și eliberează fișierul. Apelat înainte de ștergere / mutare / redenumire."""
+        import os
+        if not self.path:
+            return
+        keys = {os.path.normcase(os.path.abspath(p)) for p in paths}
+        if os.path.normcase(os.path.abspath(self.path)) not in keys:
+            return
+        was_playing = self.is_playing()
+        nxt = next_path_fn() if next_path_fn else None
+        if nxt is not None and was_playing:
+            nxt()                                  # pornește următoarea piesă (încarcă alt fișier)
+        else:
+            self.release()
 
     def seek_frac(self, frac: float):
         if self.player and self.duration:
