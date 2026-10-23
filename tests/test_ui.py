@@ -510,4 +510,14 @@ def test_v094_library_explore_cleanup(app, tmp_path, monkeypatch):
     tf.o_year.setChecked(True)
     job = tf._job_for(2)
     assert job and job[1].get("year") == "1999" and "genre" not in job[1]     # Genul (House) nu se suprascrie
+    # închidem curat: așteptăm activitățile din fundal (scrierea ratingului), apoi fereastra
+    from music_manager.ui.jobs import manager
+    import time
+    end = time.time() + 20
+    while manager().active() and time.time() < end:
+        app.processEvents()
+        time.sleep(0.05)
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    tf.close()
     win.close()
+    app.processEvents()
