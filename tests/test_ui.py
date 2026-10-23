@@ -171,6 +171,7 @@ def test_main_window_smoke(app, tmp_path):
     assert win.stack.currentWidget() is ex
     ex.show_source(("lib", "all"))
     assert ex.model.rowCount() == len(lv.items)
+    ex.table.clearSelection()      # trecerea în Explore selectează piesa care cântă
     ex.table.selectRow(0)
     ex.toggle_checks()
     assert sum(1 for r in ex.model.rows if r.checked) == 1
