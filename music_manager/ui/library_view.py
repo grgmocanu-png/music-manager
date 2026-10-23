@@ -546,7 +546,7 @@ class TrackTable(QTableView):
         return self.model_.items[self.proxy.mapToSource(proxy_index).row()]
 
     def selected(self) -> list[ldb.LibItem]:
-        rows = sorted({i.row() for i in self.selectionModel().selectedRows()})
+        rows = sorted({i.row() for i in self.selectionModel().selectedIndexes()})
         return [self.item_at(self.proxy.index(r, 0)) for r in rows]
 
     def visible(self) -> list[ldb.LibItem]:

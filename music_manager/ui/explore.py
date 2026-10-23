@@ -1022,7 +1022,7 @@ class ExploreView(QWidget):
 
     # ===== bife =====
     def _selected(self) -> list[Row]:
-        rows = sorted({i.row() for i in self.table.selectionModel().selectedRows()})
+        rows = sorted({i.row() for i in self.table.selectionModel().selectedIndexes()})
         return [r for r in (self._row_at(self.proxy.index(i, 0)) for i in rows) if r]
 
     def toggle_checks(self):

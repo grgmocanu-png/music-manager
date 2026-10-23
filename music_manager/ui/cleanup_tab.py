@@ -180,7 +180,7 @@ class CleanupTab(QWidget):
 
     def open_convert(self):
         """Conversia e acum un pas din Curățenie: se deschide pagina ei (cu „← Curățenie” sus)."""
-        tracks = self._targets() if self.table.selectionModel().selectedRows() else []
+        tracks = self._targets() if self.table.selectionModel().selectedIndexes() else []
         w = self.window()
         conv = getattr(w, "convert", None)
         if conv is None:

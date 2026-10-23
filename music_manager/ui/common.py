@@ -377,7 +377,7 @@ class TrackTable(QTableView):
         return self.source.tracks[self.proxy.mapToSource(proxy_index).row()]
 
     def selected_tracks(self) -> list[Track]:
-        rows = sorted({i.row() for i in self.selectionModel().selectedRows()})
+        rows = sorted({i.row() for i in self.selectionModel().selectedIndexes()})
         return [self.track_at(self.proxy.index(r, 0)) for r in rows]
 
     def visible_tracks(self) -> list[Track]:

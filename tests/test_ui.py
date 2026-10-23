@@ -171,10 +171,12 @@ def test_main_window_smoke(app, tmp_path):
     assert win.stack.currentWidget() is ex
     ex.show_source(("lib", "all"))
     assert ex.model.rowCount() == len(lv.items)
-    ex.table.clearSelection()      # trecerea în Explore selectează piesa care cântă
-    ex.table.selectRow(0)
+    from PySide6.QtCore import QItemSelectionModel
+    ex.table.selectionModel().select(ex.proxy.index(0, 1),          # independent de tastele apăsate în test
+                                     QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+    _dbg = (ex.proxy.rowCount(), len(ex._selected()), len(ex.table.selectionModel().selectedIndexes()))
     ex.toggle_checks()
-    assert sum(1 for r in ex.model.rows if r.checked) == 1
+    assert sum(1 for r in ex.model.rows if r.checked) == 1, _dbg
     ex.filters["f_mix"].setChecked(True)
     assert ex.proxy.rowCount() == 0          # nimic analizat încă
     ex.filters["f_mix"].setChecked(False)
