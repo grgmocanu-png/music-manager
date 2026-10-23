@@ -46,3 +46,19 @@ def test_cache_failures_dates_and_drive_change(tmp_path):
     assert got is not None and got.bpm == first.bpm
     # force reanalizează
     assert an.analyze(str(bad), cache, force=True).error
+
+
+def test_mixability(tmp_path):
+    import numpy as np
+    from music_manager.core import mixability as mx
+    p = str(tmp_path / "m.wav")
+    make(p, bpm=124, key_notes=(57, 60, 64), bass_root=45, dur=90, brk=(40, 55))
+    m, a = mx.analyze(p, str(tmp_path / "mix"), str(tmp_path / "an"))
+    assert not m.error and m.bpm_const and m.four == "da" and m.pulse >= 70 and m.score >= 7
+    assert m.use == "direct" and m.seg_end - m.seg_start > 60 and a is not None and a.bpm
+    assert mx.load_cached(p, str(tmp_path / "mix")).score == m.score
+    t = np.arange(an.SR * 60) / an.SR
+    pad = (0.2 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    q = mx.analyze_samples(pad, an.SR, name="Song (Acapella).wav")
+    assert q.pulse < 20 and q.kind == "acapella" and q.score <= 3 and q.bpm == 0
+    assert mx.name_is_vocal("Les Fleurs (acapella)") and not mx.name_is_vocal("Moody")

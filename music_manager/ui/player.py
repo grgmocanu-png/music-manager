@@ -26,9 +26,9 @@ class WaveformWidget(QWidget):
     """
     seek = Signal(float)     # 0..1
 
-    BASS = QColor(30, 110, 255)
-    MID = QColor(255, 150, 40)
-    HIGH = QColor(235, 235, 235)
+    BASS = QColor("#c46f5c")
+    MID = QColor("#d3a35d")
+    HIGH = QColor("#5fb3a6")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -41,6 +41,7 @@ class WaveformWidget(QWidget):
         self.position = 0.0      # 0..1
         self.message = "Alege o piesă ca să-i vezi forma."
         self.hover = -1.0
+        self.segment = (0.0, 0.0)    # cel mai bun segment de mixat (secunde), marcat cu verde
 
     def set_data(self, analysis, duration: float):
         if analysis is None or not analysis.has_waveform:
@@ -53,6 +54,10 @@ class WaveformWidget(QWidget):
         self.drops = list(getattr(analysis, "drops", []) or [])
         self.duration = duration or getattr(analysis, "duration", 0) or 0
         self.position = 0.0
+        self.update()
+
+    def set_segment(self, start: float, end: float):
+        self.segment = (float(start or 0), float(end or 0))
         self.update()
 
     def set_message(self, text: str):
@@ -80,7 +85,7 @@ class WaveformWidget(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        p.fillRect(self.rect(), QColor(22, 22, 26))
+        p.fillRect(self.rect(), QColor("#15171b"))
         if not self.peak:
             p.setPen(QColor(150, 150, 150))
             p.drawText(self.rect(), Qt.AlignCenter, self.message)
@@ -101,8 +106,16 @@ class WaveformWidget(QWidget):
             c.setAlpha(alpha)
             p.fillPath(path, c)
 
+        # segmentul cel mai bun (Explore)
+        s0, s1 = self.segment
+        if self.duration and s1 > s0:
+            x0, x1 = s0 / self.duration * w, s1 / self.duration * w
+            p.fillRect(QRectF(x0, 0, x1 - x0, h), QColor(95, 179, 166, 32))
+            p.setPen(QPen(QColor("#5fb3a6"), 2))
+            p.drawLine(QPointF(x0, 0), QPointF(x0, h))
+            p.drawLine(QPointF(x1, 0), QPointF(x1, h))
         # conturul total, apoi benzile de jos în sus
-        band(self.peak, 1.0, QColor(60, 60, 70))
+        band(self.peak, 1.0, QColor(60, 64, 72))
         band(self.low, 0.95, self.BASS, 230)
         band(self.mid, 0.6, self.MID, 220)
         band(self.high, 0.35, self.HIGH, 200)
@@ -118,9 +131,8 @@ class WaveformWidget(QWidget):
             p.setFont(f)
             for d in self.drops:
                 x = d / self.duration * w
-                p.setPen(QPen(QColor(255, 60, 60), 2))
+                p.setPen(QPen(QColor(224, 164, 88, 160), 1, Qt.DashLine))
                 p.drawLine(QPointF(x, 0), QPointF(x, h))
-                p.drawText(QPointF(x + 3, 11), "drop?")
 
         # cursorul de redare
         x = self.position * w
@@ -300,6 +312,7 @@ class PlayerPanel(QWidget):
         self.title.setText(title)
         self.info.setText(info)
         self.wave.set_data(analysis, duration)
+        self.wave.set_segment(0, 0)
         self._show_cover(path)
         if self.player:
             self.player.setSource(QUrl.fromLocalFile(path))

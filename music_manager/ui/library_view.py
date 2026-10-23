@@ -330,6 +330,17 @@ class EditDelegate(QStyledItemDelegate):
         super().setModelData(editor, model, index)
 
 
+class LibPill(EditDelegate):
+    """Family ca etichetă colorată, Key cu punct colorat — și tot editabile."""
+
+    def __init__(self, kind, parent=None):
+        super().__init__(parent)
+        self.kind = kind
+
+    from .delegates import PillDelegate as _P
+    paint = _P.paint
+
+
 class FilterProxy(QSortFilterProxyModel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -398,6 +409,12 @@ class TrackTable(QTableView):
         self.proxy.setSourceModel(self.model_)
         self.setModel(self.proxy)
         self.setItemDelegate(EditDelegate(self))
+        keys = [k for _, k in COLS]
+        self._pill_f = LibPill("pill", self)
+        self._pill_k = LibPill("dot", self)
+        self.setItemDelegateForColumn(keys.index("family"), self._pill_f)
+        self.setItemDelegateForColumn(keys.index("key"), self._pill_k)
+        self.setShowGrid(False)
         # editare: click pe o celulă a rândului deja selectat, sau F2
         self.setEditTriggers(QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
         self.setSortingEnabled(True)
@@ -600,6 +617,7 @@ class LibraryView(QWidget):
 
         # --- stânga ---
         self.tree = SideTree()
+        self.tree.setObjectName("sidebar")
         self.tree.itemClicked.connect(self._tree_clicked)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_menu)
@@ -711,7 +729,7 @@ class LibraryView(QWidget):
         bar.addWidget(b_clear)
 
         self.title = QLabel()
-        self.title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.title.setObjectName("pageTitle")
         self.count = QLabel()
         self.count.setStyleSheet("color: gray;")
         th = QHBoxLayout()
@@ -1039,6 +1057,9 @@ class LibraryView(QWidget):
         missing = self._missing_items()
         if missing:
             add(None, f"✗ Lipsă / offline ({len(missing)})", ("missing",))
+        n_voc = len(self._vocal_items())
+        if n_voc:
+            add(None, f"🎤 Acapella & vocal ({n_voc})", ("vocal",))
         n_bpm = sum(1 for it in self.items if it.bpm_suggest)
         if n_bpm:
             add(None, f"❓ BPM de verificat ({n_bpm})", ("bpmcheck",))
@@ -1102,6 +1123,11 @@ class LibraryView(QWidget):
             out.append(it)
         return out
 
+    def _vocal_items(self):
+        from ..core.mixability import name_is_vocal
+        return [it for it in self.items
+                if name_is_vocal(" ".join([it.track.title, it.track.filename, it.track.comment, it.track.album]))]
+
     def items_for(self, view) -> tuple[str, list[ldb.LibItem]]:
         kind = view[0]
         if kind == "new":
@@ -1110,6 +1136,8 @@ class LibraryView(QWidget):
             return "Nu sunt în colecția Traktor", [it for it in self.items if not it.in_traktor]
         if kind == "missing":
             return "Lipsă / offline (din playlisturi)", self._missing_items()
+        if kind == "vocal":
+            return "Acapella & vocal (după nume și taguri)", self._vocal_items()
         if kind == "bpmcheck":
             return "BPM de verificat (dublu / jumătate?)", [it for it in self.items if it.bpm_suggest]
         if kind == "pl":

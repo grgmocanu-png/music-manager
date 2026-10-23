@@ -410,6 +410,21 @@ def save_cached(path: str, cache_dir: str, a: Analysis) -> None:
     _write_alias(path, cache_dir)
 
 
+def analyze_samples(x: np.ndarray, bpm_range: tuple[float, float] = (85, 175)) -> Analysis:
+    """Analiza din eșantioane deja decodate (mono, SR)."""
+    from datetime import datetime
+    a = Analysis(analyzed_at=datetime.now().isoformat(timespec="minutes"))
+    a.duration = len(x) / SR
+    if len(x) == 0:
+        raise RuntimeError("fișier gol")
+    (a.peak, a.low, a.mid, a.high), low_e, frame_sec = waveform(x)
+    a.drops = find_drops(low_e, frame_sec)
+    a.bpm, a.bpm_confidence = estimate_bpm(x, SR, *bpm_range)
+    a.key, a.key_confidence = estimate_key(x, SR)
+    a.energy = estimate_energy(x, SR)
+    return a
+
+
 def analyze(path: str, cache_dir: str | None = None, ffmpeg: str | None = None,
             bpm_range: tuple[float, float] = (85, 175), force: bool = False) -> Analysis:
     """force=True: analizează din nou chiar dacă există deja (sau a eșuat înainte)."""
@@ -417,20 +432,14 @@ def analyze(path: str, cache_dir: str | None = None, ffmpeg: str | None = None,
         cached = load_cached(path, cache_dir)
         if cached is not None:
             return cached
-    from datetime import datetime
-    a = Analysis(analyzed_at=datetime.now().isoformat(timespec="minutes"))
+    a = Analysis()
     try:
         x = decode(path, ffmpeg)
-        a.duration = len(x) / SR
-        if len(x) == 0:
-            raise RuntimeError("fișier gol")
-        (a.peak, a.low, a.mid, a.high), low_e, frame_sec = waveform(x)
-        a.drops = find_drops(low_e, frame_sec)
-        a.bpm, a.bpm_confidence = estimate_bpm(x, SR, *bpm_range)
-        a.key, a.key_confidence = estimate_key(x, SR)
-        a.energy = estimate_energy(x, SR)
+        a = analyze_samples(x, bpm_range)
     except Exception as e:
+        from datetime import datetime
         a.error = str(e) or e.__class__.__name__
+        a.analyzed_at = datetime.now().isoformat(timespec="minutes")
     if cache_dir:
         save_cached(path, cache_dir, a)      # și eșecurile: nu le mai reîncercăm singuri
     return a

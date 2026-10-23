@@ -180,6 +180,10 @@ def analysis_dir() -> str:
     return os.path.join(data_dir(), "analiza")
 
 
+def mix_dir() -> str:
+    return os.path.join(data_dir(), "mixabilitate")
+
+
 def history():
     """Istoricul de curățenie (prin ce pași a trecut fiecare piesă)."""
     global _HISTORY
@@ -195,8 +199,11 @@ def after_moves(moves: list[tuple[str, str]]) -> None:
         return
     from ..core import analysis as an
     history().moved(moves)
+    from ..core import mixability as mx
     for old, new in moves:
         an.move_cached(old, new, analysis_dir())
+        if new:
+            mx.move_cached(old, new, mix_dir())
     if AppState.instance is not None:
         AppState.instance.files_moved.emit(list(moves))
 

@@ -228,14 +228,26 @@ class SettingsTab(QWidget):
             return scroll
 
         tags_box = self._tags_box()
-        self.tabs = QTabWidget()
-        self.tabs.addTab(page(self._library_box()), "📂 Foldere")
-        self.tabs.addTab(page(sp_box, sl_box, tags_box), "🔑 Conturi, API-uri, tokenuri")
-        self.tabs.addTab(page(self._dj_box()), "🎛 Programe DJ și export")
-        self.tabs.addTab(page(self._genres_box()), "🏷 Genuri")
-        outer = QVBoxLayout(self)
+        # secțiuni în stânga (ca în machetă), conținutul în dreapta
+        from PySide6.QtWidgets import QListWidget, QStackedWidget
+        self.sections = QListWidget()
+        self.sections.setObjectName("sections")
+        self.sections.setFixedWidth(240)
+        self.pages = QStackedWidget()
+        for title, w in (("Foldere", page(self._library_box())),
+                         ("Conturi, API-uri, tokenuri", page(sp_box, sl_box, tags_box)),
+                         ("Programe DJ, analiză, aspect", page(self._dj_box())),
+                         ("Genuri și intervale BPM", page(self._genres_box()))):
+            self.sections.addItem(title)
+            self.pages.addWidget(w)
+        self.sections.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.sections.setCurrentRow(0)
+        self.tabs = self.pages          # compatibilitate
+        outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self.tabs)
+        outer.setSpacing(0)
+        outer.addWidget(self.sections)
+        outer.addWidget(self.pages, 1)
         self._refresh()
 
     def _save_client_id(self):

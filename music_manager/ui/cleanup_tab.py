@@ -5,7 +5,7 @@ import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -52,36 +52,81 @@ class CleanupTab(QWidget):
         self.only_todo.toggled.connect(lambda on: (self.table.proxy.set_only_unfinished(
             history().complete if on else None), self._update_status()))
 
-        b_dup = QPushButton("1. Dubluri…")
-        b_clean = QPushButton("2. Curăță numele (site-uri, [Free DL]…)…")
-        b_tags = QPushButton("3. Taguri online: gen, stil, an, label, copertă…")
-        b_ren = QPushButton("4. Redenumește / organizează după taguri…")
-        b_clean.clicked.connect(self.clean_names)
-        b_tags.clicked.connect(self.tags_online)
-        self.b_undo = QPushButton("Anulează ultima operație")
-        b_dup.clicked.connect(self.duplicates)
-        b_ren.clicked.connect(self.rename)
+        self.b_undo = QPushButton("↶ Anulează ultima operație")
         self.b_undo.clicked.connect(self.undo)
-        actions = QHBoxLayout()
-        for b in (b_dup, b_clean, b_tags, b_ren):
-            actions.addWidget(b)
-        actions.addStretch()
-        actions.addWidget(self.b_undo)
+        top.addWidget(self.b_undo)
+
+        # cei patru pași, ca niște carduri (ca în machetă)
+        self.cards = {}
+        steps = [
+            ("dubluri", "Dubluri", "Piese care par la fel. „Păstrez doar MP3” lasă cel mai bun MP3 din fiecare grup.",
+             "Caută dublurile", self.duplicates, "#e0a458"),
+            ("nume", "Curăță nume", "Scoate linkuri, „free download”, „320kbps” și numere de piesă din nume și taguri.",
+             "Curăță numele", self.clean_names, "#8fa8e0"),
+            ("taguri", "Taguri online", "Gen, stil, an, label și copertă din Discogs, MusicBrainz și Spotify. "
+             "Se scriu automat.", "Caută taguri", self.tags_online, "#5fb3a6"),
+            ("redenumire", "Redenumire", "Pune fișierele în forma aleasă, ex. „Artist - Titlu”. Vezi fiecare "
+             "conflict și motivul lui.", "Redenumește", self.rename, "#c79bd6"),
+        ]
+        cards = QGridLayout()
+        cards.setHorizontalSpacing(14)
+        for col, (key, title, text, btn, fn, color) in enumerate(steps):
+            card = QFrame()
+            card.setObjectName("card")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(16, 14, 16, 14)
+            head = QHBoxLayout()
+            t = QLabel(title)
+            t.setStyleSheet("font-weight: 600; font-size: 14px;")
+            n = QLabel("")
+            n.setStyleSheet(f"color: {color}; font-weight: 600;")
+            head.addWidget(t)
+            head.addStretch()
+            head.addWidget(n)
+            d = QLabel(text)
+            d.setWordWrap(True)
+            d.setObjectName("muted")
+            bar = QProgressBar()
+            bar.setTextVisible(False)
+            bar.setFixedHeight(6)
+            bar.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; border-radius: 3px; }}")
+            done = QLabel("")
+            done.setObjectName("muted")
+            b = QPushButton(btn)
+            b.clicked.connect(fn)
+            cl.addLayout(head)
+            cl.addWidget(d)
+            cl.addWidget(bar)
+            cl.addWidget(done)
+            cl.addWidget(b, 0, Qt.AlignLeft)
+            cards.addWidget(card, 0, col)
+            self.cards[key] = (n, bar, done)
         hint = QLabel("Dacă selectezi piese în tabel, acțiunile se aplică doar lor; altfel tuturor celor afișate. "
-                      "Nimic nu se șterge: dublurile se mută în „_Dubluri”, iar orice mutare se poate anula.")
+                      "Nimic nu se șterge fără să întrebe: dublurile se mută în „_Dubluri” sau în Coș, iar orice "
+                      "mutare se poate anula.")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: gray;")
+        hint.setObjectName("muted")
+        title = QLabel("Curățenie")
+        title.setObjectName("pageTitle")
 
         lay = QVBoxLayout(self)
-        lay.addLayout(top)
+        lay.setContentsMargins(20, 16, 20, 12)
+        lay.setSpacing(12)
+        tr = QHBoxLayout()
+        tr.addWidget(title)
+        tr.addSpacing(16)
+        tr.addLayout(top, 1)
+        lay.addLayout(tr)
+        lay.addLayout(cards)
         lay.addWidget(self.progress)
         lay.addWidget(self.status)
         srow = QHBoxLayout()
-        srow.addWidget(self.search, 1)
         srow.addWidget(self.only_todo)
+        srow.addStretch()
+        self.search.setFixedWidth(260)
+        srow.addWidget(self.search)
         lay.addLayout(srow)
         lay.addWidget(self.table, 1)
-        lay.addLayout(actions)
         lay.addWidget(hint)
         self._update_where()
         self._refresh_undo()
@@ -134,7 +179,19 @@ class CleanupTab(QWidget):
         self.table.set_tracks(tracks)
         self._update_status()
 
+    def _update_cards(self):
+        tracks = self.tracks
+        n = len(tracks) or 1
+        for key, (num, bar, done) in getattr(self, "cards", {}).items():
+            ok = sum(1 for t in tracks if history().done(t.path, key))
+            todo = len(tracks) - ok
+            num.setText(str(todo) if tracks else "")
+            bar.setMaximum(n)
+            bar.setValue(ok)
+            done.setText(f"{ok} făcute · {todo} de făcut" if tracks else "Scanează întâi")
+
     def _update_status(self):
+        self._update_cards()
         tracks = self.tracks
         no_tags = sum(1 for t in tracks if not (t.artist and t.title))
         done = sum(1 for t in tracks if history().complete(t.path))

@@ -10,7 +10,13 @@ def apply_theme(app, name: str = "dark") -> None:
     app.setStyle("Fusion")
     if name != "dark":
         app.setPalette(app.style().standardPalette())
-        app.setStyleSheet("")
+        app.setStyleSheet(
+            "QPushButton#nav { border: 0; background: transparent; padding: 7px 14px; border-radius: 6px; }"
+            "QPushButton#nav:checked { background: #e0a458; color: #15171b; font-weight: 600; }"
+            "QLabel#logo { font-weight: 700; font-size: 15px; } QLabel#pageTitle { font-size: 17px; font-weight: 600; }"
+            "QLabel#muted, QLabel#navlabel { color: gray; }"
+            "QPushButton#primary { background: #e0a458; color: #15171b; font-weight: 600; }"
+            "QFrame#card { border: 1px solid #d0d0d0; border-radius: 10px; }")
         return
     p = QPalette()
     c = {
@@ -51,4 +57,40 @@ def apply_theme(app, name: str = "dark") -> None:
         "QProgressBar::chunk { background: #5fb3a6; border-radius: 3px; }"
         "QGroupBox { border: 1px solid #2c3138; border-radius: 8px; margin-top: 14px; padding-top: 8px; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #c9ccd1; }"
+        # bara de sus
+        "QWidget#topbar { background: #1c1f24; border-bottom: 1px solid #2c3138; }"
+        "QLabel#logo { font-weight: 700; font-size: 15px; color: #f1efec; padding-left: 4px; }"
+        "QLabel#navlabel { color: #8f959d; font-size: 11px; letter-spacing: 1px; padding: 0 6px; }"
+        "QPushButton#nav { border: 0; background: transparent; color: #b8bcc2; padding: 7px 14px; border-radius: 6px; }"
+        "QPushButton#nav:hover { background: #262a30; color: #f1efec; }"
+        "QPushButton#nav:checked { background: #e0a458; color: #15171b; font-weight: 600; }"
+        "QFrame#navsep { color: #2f343b; }"
+        "QPushButton#jobs { border: 1px solid #2f343b; border-radius: 14px; padding: 5px 12px; background: #262a30;"
+        " color: #c9ccd1; }"
+        # titluri, texte, butoane speciale
+        "QLabel#pageTitle { font-size: 17px; font-weight: 600; color: #f1efec; }"
+        "QLabel#muted { color: #9aa0a8; }"
+        "QPushButton#primary { background: #e0a458; color: #15171b; border: 0; font-weight: 600; }"
+        "QPushButton#primary:hover { background: #f0bd7a; }"
+        "QPushButton#danger { color: #d9826b; border-color: #4a3530; }"
+        "QPushButton#chip { border-radius: 13px; padding: 5px 12px; }"
+        "QPushButton#chip:checked { background: #2f4a44; color: #9fe0d2; border-color: #2f4a44; }"
+        "QToolButton { padding: 5px 12px; border: 1px solid #343a42; border-radius: 5px; background: #262a30; }"
+        "QToolButton::menu-indicator { image: none; }"
+        # bara din stânga (playlisturi / surse)
+        "QTreeWidget#sidebar { background: #1a1d21; border: 0; border-right: 1px solid #2c3138; padding: 8px 4px; }"
+        "QTreeWidget#sidebar::item { padding: 5px 6px; border-radius: 5px; }"
+        "QTreeWidget#sidebar::item:selected { background: #2a2f36; color: #f1efec; }"
+        "QTreeWidget#sidebar::item:hover { background: #22262c; }"
+        # carduri (Curățenie) și secțiuni (Setări)
+        "QFrame#card { background: #1c1f24; border: 1px solid #2c3138; border-radius: 10px; }"
+        "QListWidget#sections { background: #1a1d21; border: 0; border-right: 1px solid #2c3138; padding: 10px 6px; }"
+        "QListWidget#sections::item { padding: 9px 12px; border-radius: 6px; color: #c9ccd1; }"
+        "QListWidget#sections::item:selected { background: #2a2f36; color: #f1efec; font-weight: 600; }"
+        "QTableView { selection-background-color: #3a3328; }"
+        "QMenu { background: #23272d; border: 1px solid #3a4048; padding: 6px; }"
+        "QMenu::item { padding: 6px 18px; border-radius: 4px; }"
+        "QMenu::item:selected { background: #2f343b; }"
+        "QMenu::item:disabled { color: #8f959d; }"
+        "QSplitter::handle { background: #2c3138; width: 1px; }"
     )
