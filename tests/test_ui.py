@@ -558,7 +558,7 @@ def test_v095_export_family_menus(app, tmp_path, monkeypatch):
     assert [a for _t, a in win.PAGES][:5] == ["download", "cleanup", "library", "explore", "export"]
     from PySide6.QtWidgets import QLabel
     assert any(w.text().startswith("1. ") for w in win.cleanup.findChildren(QLabel))
-    assert hasattr(win.download, "b_verify_all")
+    assert hasattr(win.download.playlists, "b_verify_all")
     # Family a ta, pe mai multe piese; sugestia din Taguri online nu se scrie singură
     sel = lv.items[:2]
     lv.set_family(sel, "Disco")
