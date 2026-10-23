@@ -167,6 +167,30 @@ def _hints(t) -> dict:
             "style": getattr(t, "tag_style", ""), "url": getattr(t, "url", "")}
 
 
+def enabled_sources() -> list[str]:
+    from ..core.tagsources import configured_sources
+    return [n for n, on in configured_sources(settings().value("tags/sources", "") or "") if on]
+
+
+def browser_search_menu(menu, artist: str, title: str):
+    """„Caută în browser”: Beatport, Beatstats, Discogs, Google (cu „genre”)."""
+    import urllib.parse
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+    q = f"{artist} {title}".strip()
+    enc = urllib.parse.quote_plus(q)
+    sm = menu.addMenu("🔎 Caută în browser")
+    for name, url in (("Beatport", f"https://www.beatport.com/search?q={enc}"),
+                      ("Beatstats", f"https://www.google.com/search?q={urllib.parse.quote_plus(q + ' site:beatstats.com')}"),
+                      ("Discogs", f"https://www.discogs.com/search/?q={enc}&type=all"),
+                      ("Traxsource", f"https://www.traxsource.com/search?term={enc}"),
+                      ("Juno Download", f"https://www.junodownload.com/search/?q%5Ball%5D%5B%5D={enc}"),
+                      ("SoundCloud", f"https://soundcloud.com/search?q={enc}"),
+                      ("Google (genre)", f"https://www.google.com/search?q={urllib.parse.quote_plus(q + ' genre')}")):
+        sm.addAction(name, lambda u=url: QDesktopServices.openUrl(QUrl(u)))
+    return sm
+
+
 class TagFinderDialog(QDialog):
     COLS = ["", "Piesă", "Gen", "Stil (→ Comentariu)", "An", "Label", "Copertă", "Găsit în", "Verificată"]
 
@@ -201,9 +225,15 @@ class TagFinderDialog(QDialog):
         for c in (self.c_genre, self.c_year, self.c_label, self.c_cover):
             c.setChecked(True)
             c.toggled.connect(lambda *_: self._render_all())
-        self.c_over = QCheckBox("Suprascrie ce e deja completat")
-        self.c_over.setToolTip("Și după căutare: bifează, apoi „Aplică bifatele” — nu mai caut din nou.")
-        self.c_over.toggled.connect(lambda *_: self._render_all())
+        # suprascriere pe fiecare câmp (ex. Anul și Coperta da, Genul nu); cea mare le bifează pe toate
+        self.o_genre, self.o_year, self.o_label, self.o_cover = (QCheckBox("suprascrie") for _ in range(4))
+        for c in (self.o_genre, self.o_year, self.o_label, self.o_cover):
+            c.setToolTip("Înlocuiește și ce e deja completat la câmpul ăsta. Merge și după căutare, fără să caut din nou.")
+            c.toggled.connect(lambda *_: self._render_all())
+            c.toggled.connect(lambda *_: self._sync_over())
+        self.c_over = QCheckBox("Suprascrie tot")
+        self.c_over.setToolTip("Bifează / debifează „suprascrie” la toate câmpurile.")
+        self.c_over.clicked.connect(self._over_all)
         self.c_orig = QCheckBox("Anul primei lansări (nu al reeditărilor)")
         self.c_orig.setChecked(True)
         self.c_auto = QCheckBox("Scrie automat în fișiere pe măsură ce găsesc")
@@ -214,16 +244,27 @@ class TagFinderDialog(QDialog):
         self._derived: dict = {}       # rând -> (artist, titlu) luate din numele fișierului
         opts = QHBoxLayout()
         opts.addWidget(QLabel("Completez:"))
-        for c in (self.c_genre, self.c_year, self.c_label, self.c_cover):
+        for c, o in ((self.c_genre, self.o_genre), (self.c_year, self.o_year), (self.c_label, self.o_label),
+                     (self.c_cover, self.o_cover)):
             opts.addWidget(c)
-        opts.addSpacing(20)
+            o.setStyleSheet("color: #9aa0a8;")
+            opts.addWidget(o)
+            opts.addSpacing(10)
+        opts.addSpacing(10)
         opts.addWidget(self.c_over)
         opts.addWidget(self.c_orig)
         opts.addWidget(self.c_auto)
         opts.addStretch()
 
         self.table = _table(self.COLS, (28, 300, 150, 200, 60, 140, 70, 220))
-        add_reveal_menu(self.table, lambda idx: self.tracks[idx.row()].path)
+
+        def _search_menu(m, idx):
+            t = self.tracks[idx.row()]
+            a, ti = self._derived.get(idx.row(), (t.artist, t.title))
+            if not (a or ti):
+                a, ti = lib.artist_title_from_filename(t)
+            browser_search_menu(m, a or "", ti or t.display_title)
+        add_reveal_menu(self.table, lambda idx: self.tracks[idx.row()].path, _search_menu)
         add_space_toggle(self.table, 0)
         b_all, b_none, b_new = QPushButton("Bifează tot"), QPushButton("Debifează tot"), \
             QPushButton("Bifează doar ce n-a fost verificat")
@@ -264,6 +305,21 @@ class TagFinderDialog(QDialog):
         lay.addWidget(self.progress)
         lay.addLayout(row)
         self._fill_initial()
+
+    def _over(self, field) -> bool:
+        return {"genre": self.o_genre, "year": self.o_year, "label": self.o_label,
+                "cover": self.o_cover}[field].isChecked()
+
+    def _over_all(self, on):
+        for c in (self.o_genre, self.o_year, self.o_label, self.o_cover):
+            c.blockSignals(True)
+            c.setChecked(on)
+            c.blockSignals(False)
+        self._render_all()
+
+    def _sync_over(self):
+        allon = all(c.isChecked() for c in (self.o_genre, self.o_year, self.o_label, self.o_cover))
+        self.c_over.setChecked(allon)
 
     # Activități: ce scrie lângă fereastră
     def progress_text(self) -> str:
@@ -308,21 +364,20 @@ class TagFinderDialog(QDialog):
     def _render(self, i):
         t = self.tracks[i]
         r = self.results.get(i)
-        over = self.c_over.isChecked()
 
-        def cell(col, cur, new, on):
-            if on and r is not None and new and (over or not cur) and new != cur:
+        def cell(col, cur, new, on, field):
+            if on and r is not None and new and (self._over(field) or not cur) and new != cur:
                 self.table.setItem(i, col, _item(f"{cur or '—'} → {new}", "#27ae60", tooltip=new))
                 return True
             self.table.setItem(i, col, _item(cur or "—", "gray"))
             return False
 
         ch = False
-        ch |= cell(2, t.genre, r.genre if r else "", self.c_genre.isChecked())
-        ch |= cell(3, t.comment, r.style_text if r else "", self.c_genre.isChecked())
-        ch |= cell(4, t.year, r.year if r else "", self.c_year.isChecked())
-        ch |= cell(5, t.label, r.label if r else "", self.c_label.isChecked())
-        if r is not None and self.c_cover.isChecked() and r.cover_url and (over or not t.has_cover):
+        ch |= cell(2, t.genre, r.genre if r else "", self.c_genre.isChecked(), "genre")
+        ch |= cell(3, t.comment, r.style_text if r else "", self.c_genre.isChecked(), "genre")
+        ch |= cell(4, t.year, r.year if r else "", self.c_year.isChecked(), "year")
+        ch |= cell(5, t.label, r.label if r else "", self.c_label.isChecked(), "label")
+        if r is not None and self.c_cover.isChecked() and r.cover_url and (self._over("cover") or not t.has_cover):
             self.table.setItem(i, 6, _item("nouă", "#27ae60", tooltip=r.cover_url))
             ch = True
         else:
@@ -350,15 +405,14 @@ class TagFinderDialog(QDialog):
             self.table.setRowHidden(i, hide)
 
     def _need(self, t) -> tuple:
-        over = self.c_over.isChecked()
         need = []
-        if self.c_genre.isChecked() and (over or not t.genre or not t.comment):
+        if self.c_genre.isChecked() and (self._over("genre") or not t.genre or not t.comment):
             need.append("genre")
-        if self.c_year.isChecked() and (over or not t.year):
+        if self.c_year.isChecked() and (self._over("year") or not t.year):
             need.append("year")
-        if self.c_label.isChecked() and (over or not t.label):
+        if self.c_label.isChecked() and (self._over("label") or not t.label):
             need.append("label")
-        if self.c_cover.isChecked() and (over or not t.has_cover):
+        if self.c_cover.isChecked() and (self._over("cover") or not t.has_cover):
             need.append("cover")
         return tuple(need)
 
@@ -369,11 +423,9 @@ class TagFinderDialog(QDialog):
             return
         from ..core.tagsearch import TagFinder
         finder = TagFinder(settings().value("discogs/token", "") or "", self.spotify, genre_mapper(),
-                           use_musicbrainz=settings().value("tags/musicbrainz", True) not in (False, "false"),
                            original_release=self.c_orig.isChecked(),
                            lastfm_key=settings().value("lastfm/key", "") or "",
-                           use_bandcamp=settings().value("tags/bandcamp", True) not in (False, "false"),
-                           by_artist=settings().value("tags/by_artist", True) not in (False, "false"))
+                           sources=enabled_sources())
         rows = [i for i in range(self.table.rowCount()) if self.table.item(i, 0).checkState() == Qt.Checked]
         if not rows:
             QMessageBox.information(self, "Taguri", "Bifează piesele pe care vrei să le caut.")
@@ -503,20 +555,20 @@ class TagFinderDialog(QDialog):
         if i not in self.results:
             return None
         t, r = self.tracks[i], self.results[i]
-        over = self.c_over.isChecked()
         f = {}
         if self.c_genre.isChecked():
-            if r.genre and (over or not t.genre) and r.genre != t.genre:
+            og = self._over("genre")
+            if r.genre and (og or not t.genre) and r.genre != t.genre:
                 f["genre"] = r.genre
             old_style, role, energy = parse_comment(t.comment)
-            if r.style_text and (over or not old_style) and r.style_text != old_style:
+            if r.style_text and (og or not old_style) and r.style_text != old_style:
                 f["comment"] = compose_comment(r.style_text, role, energy)   # păstrăm rolul și energia
-        if self.c_year.isChecked() and r.year and (over or not t.year) and r.year != t.year:
+        if self.c_year.isChecked() and r.year and (self._over("year") or not t.year) and r.year != t.year:
             f["year"] = r.year
-        if self.c_label.isChecked() and r.label and (over or not t.label) and r.label != t.label:
+        if self.c_label.isChecked() and r.label and (self._over("label") or not t.label) and r.label != t.label:
             f["label"] = r.label
         cover = (r.cover_urls or [r.cover_url]) if (self.c_cover.isChecked() and r.cover_url and
-                                                   (over or not t.has_cover)) else None
+                                                   (self._over("cover") or not t.has_cover)) else None
         if i in self._derived and (f or cover):
             a, ti = self._derived[i]
             if a and not t.artist:
@@ -884,9 +936,10 @@ class RuleRow(QWidget):
 
 
 class SmartPlaylistDialog(QDialog):
-    def __init__(self, name: str = "", rules: dict | None = None, preview=None, parent=None):
+    def __init__(self, name: str = "", rules: dict | None = None, preview=None, parent=None, fixed_count: int = 0):
         super().__init__(parent)
         self.setWindowTitle("Playlist inteligent")
+        self.fixed_count = fixed_count
         self.resize(720, 420)
         self.preview = preview
         rules = rules or {"match": "all", "rules": [{"field": "genre", "op": "este oricare din", "value": ""},
@@ -917,6 +970,14 @@ class SmartPlaylistDialog(QDialog):
         f = QFormLayout()
         f.addRow("Nume:", self.name)
         f.addRow("Piesele trebuie să respecte:", self.match)
+        self.scope = QComboBox()
+        if fixed_count:
+            # playlist normal transformat: piesele puse de mână rămân
+            self.scope.addItem(f"Adaugă din toată biblioteca piesele care respectă regulile "
+                               f"(+ cele {fixed_count} puse de mână)", "library")
+            self.scope.addItem(f"Filtrează doar cele {fixed_count} piese puse de mână", "own")
+            self.scope.setCurrentIndex(1 if (rules or {}).get("scope") == "own" else 0)
+            f.addRow("Regulile:", self.scope)
         lay.addLayout(f)
         lay.addLayout(self.rows_box)
         r = QHBoxLayout()
@@ -940,7 +1001,10 @@ class SmartPlaylistDialog(QDialog):
         row.deleteLater()
 
     def rules(self) -> dict:
-        return {"match": self.match.currentData(), "rules": [r.rule() for r in self.rows]}
+        out = {"match": self.match.currentData(), "rules": [r.rule() for r in self.rows]}
+        if self.fixed_count:
+            out["scope"] = self.scope.currentData()
+        return out
 
     def _preview(self):
         if self.preview:

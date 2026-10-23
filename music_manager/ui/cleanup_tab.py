@@ -67,6 +67,10 @@ class CleanupTab(QWidget):
              "Se scriu automat.", "Caută taguri", self.tags_online, "#5fb3a6"),
             ("redenumire", "Redenumire", "Pune fișierele în forma aleasă, ex. „Artist - Titlu”. Vezi fiecare "
              "conflict și motivul lui.", "Redenumește", self.rename, "#c79bd6"),
+            ("sortare", "Sortează în foldere", "Familie → Gen (sau Familie / Familie → Stil), în orice folder. "
+             "Copiază sau mută, cu previzualizare.", "Sortează…", self.sort_folders, "#9fe0d2"),
+            ("conversie", "Conversie", "FLAC / WAV / AIFF → MP3 320 pentru Pioneer, sau invers. Păstrează "
+             "tagurile și coperta.", "Deschide conversia", self.open_convert, "#d99b8c"),
         ]
         cards = QGridLayout()
         cards.setHorizontalSpacing(14)
@@ -99,7 +103,7 @@ class CleanupTab(QWidget):
             cl.addWidget(bar)
             cl.addWidget(done)
             cl.addWidget(b, 0, Qt.AlignLeft)
-            cards.addWidget(card, 0, col)
+            cards.addWidget(card, col // 3, col % 3)
             self.cards[key] = (n, bar, done)
         hint = QLabel("Dacă selectezi piese în tabel, acțiunile se aplică doar lor; altfel tuturor celor afișate. "
                       "Nimic nu se șterge fără să întrebe: dublurile se mută în „_Dubluri” sau în Coș, iar orice "
@@ -130,6 +134,61 @@ class CleanupTab(QWidget):
         lay.addWidget(hint)
         self._update_where()
         self._refresh_undo()
+
+    def selected_paths(self) -> list[str]:
+        return [t.path for t in self.table.selected_tracks()]
+
+    def focus_paths(self, paths):
+        """Selectează în Curățenie piesele venite din Bibliotecă / Explore (dacă sunt în ce ai scanat)."""
+        from ..core.djcollections import norm_path
+        want = {norm_path(p) for p in paths}
+
+        def rows():
+            return [r for r in range(self.table.proxy.rowCount())
+                    if norm_path(self.table.track_at(self.table.proxy.index(r, 0)).path) in want]
+        found = rows()
+        if not found and (self.search.text() or self.only_todo.isChecked()):
+            self.search.clear()
+            self.only_todo.setChecked(False)
+            found = rows()
+        if not found:
+            if self.tracks:
+                self.status.setText("Piesa selectată nu e în ce ai scanat aici (alege alt folder sus).")
+            return
+        from PySide6.QtCore import QItemSelection, QItemSelectionModel
+        from PySide6.QtWidgets import QAbstractItemView
+        selm = self.table.selectionModel()
+        sel = QItemSelection()
+        last = self.table.proxy.columnCount() - 1
+        for r in found:
+            sel.select(self.table.proxy.index(r, 0), self.table.proxy.index(r, last))
+        selm.select(sel, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        ix = self.table.proxy.index(found[0], 0)
+        selm.setCurrentIndex(ix, QItemSelectionModel.NoUpdate)
+        self.table.scrollTo(ix, QAbstractItemView.PositionAtCenter)
+
+    def sort_folders(self):
+        tracks = self._targets()
+        if not tracks:
+            QMessageBox.information(self, "Sortează", "Scanează mai întâi.")
+            return
+        from .sort_tool import items_from_tracks, open_sort
+        lv = getattr(self, "library", None)
+        dlg = open_sort(items_from_tracks(tracks, lv), lv, self)
+        if dlg is not None:
+            dlg.on_applied = self._after_change
+
+    def open_convert(self):
+        """Conversia e acum un pas din Curățenie: se deschide pagina ei (cu „← Curățenie” sus)."""
+        tracks = self._targets() if self.table.selectionModel().selectedRows() else []
+        w = self.window()
+        conv = getattr(w, "convert", None)
+        if conv is None:
+            return
+        if tracks:
+            self.state.send_to_convert.emit([t.path for t in tracks])
+        elif hasattr(w, "show_tab"):
+            w.show_tab(conv)
 
     def _target_changed(self, i):
         if TARGETS[i] == "Alt folder…":
@@ -183,6 +242,15 @@ class CleanupTab(QWidget):
         tracks = self.tracks
         n = len(tracks) or 1
         for key, (num, bar, done) in getattr(self, "cards", {}).items():
+            if key in ("sortare", "conversie"):
+                bar.setVisible(False)
+                if key == "conversie":
+                    nl = sum(1 for t in tracks if t.lossless)
+                    num.setText(str(nl) if tracks else "")
+                    done.setText(f"{nl} fișiere lossless (FLAC / WAV / AIFF)" if tracks else "")
+                else:
+                    done.setText(f"{len(tracks)} piese scanate" if tracks else "Scanează întâi")
+                continue
             ok = sum(1 for t in tracks if history().done(t.path, key))
             todo = len(tracks) - ok
             num.setText(str(todo) if tracks else "")

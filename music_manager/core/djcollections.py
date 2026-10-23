@@ -47,6 +47,34 @@ class Collection:
     mtime: float = 0.0
     error: str = ""
 
+    def lookup(self, path: str):
+        """Informația pentru o piesă. Întâi după calea exactă; dacă discul apare altfel în colecție
+        (literă schimbată, numele volumului în loc de literă, alt calculator), după folder + nume de fișier,
+        apoi doar după numele fișierului — numai dacă e unic."""
+        np_ = norm_path(path)
+        info = self.tracks.get(np_)
+        if info is not None:
+            return info
+        if getattr(self, "_tail", None) is None:
+            tail: dict = {}
+            name: dict = {}
+            for k, v in self.tracks.items():
+                base = os.path.basename(k)
+                par = os.path.basename(os.path.dirname(k))
+                tail.setdefault((par, base), []).append(v)
+                name.setdefault(base, []).append(v)
+            object.__setattr__(self, "_tail", tail)
+            object.__setattr__(self, "_name", name)
+        base = os.path.basename(np_)
+        par = os.path.basename(os.path.dirname(np_))
+        lst = self._tail.get((par, base))
+        if lst and len(lst) == 1:
+            return lst[0]
+        lst = self._name.get(base)
+        if lst and len(lst) == 1:
+            return lst[0]
+        return None
+
 
 def _f(v) -> float:
     try:
@@ -73,12 +101,43 @@ def _traktor_location(loc: ET.Element) -> str:
         return ""
     if len(vol) == 2 and vol[1] == ":":           # Windows: „C:”
         return vol + d + f
+    if os.name == "nt" and vol:                   # Windows: uneori numele volumului („MUZICA”), nu litera
+        letter = _win_volume_letters().get(vol.lower())
+        if letter:
+            return letter + d + f
     p = d + f if d.startswith("/") else "/" + d + f       # macOS: VOLUME e numele discului
     if vol and not os.path.exists(p):
         ext = "/Volumes/" + vol + p                         # disc extern pe Mac
         if os.path.exists(ext):
             return ext
     return p
+
+
+_vol_cache: dict | None = None
+
+
+def _win_volume_letters() -> dict:
+    """{numele volumului (lowercase): „H:”} pentru discurile conectate (Windows)."""
+    global _vol_cache
+    if _vol_cache is not None:
+        return _vol_cache
+    out = {}
+    try:
+        import ctypes
+        import string
+        k32 = ctypes.windll.kernel32
+        for letter in string.ascii_uppercase:
+            root = f"{letter}:\\"
+            if not os.path.exists(root):
+                continue
+            buf = ctypes.create_unicode_buffer(261)
+            if k32.GetVolumeInformationW(ctypes.c_wchar_p(root), buf, 261, None, None, None, None, 0):
+                if buf.value:
+                    out[buf.value.lower()] = f"{letter}:"
+    except Exception:
+        pass
+    _vol_cache = out
+    return out
 
 
 def parse_traktor(path: str) -> Collection:
@@ -220,8 +279,7 @@ def best_values(path: str, collections: list[Collection], priority: list[str]) -
 
     Întoarce (DJInfo combinat, {câmp: sursă}).
     """
-    np_ = norm_path(path)
-    by_src = {c.source: c.tracks.get(np_) for c in collections if not c.error}
+    by_src = {c.source: c.lookup(path) for c in collections if not c.error}
     out, src = DJInfo(), {}
     for name in priority:
         info = by_src.get(name)

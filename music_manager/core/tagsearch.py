@@ -78,11 +78,13 @@ class TagResult:
 class TagFinder:
     def __init__(self, discogs_token: str = "", spotify=None, mapper: GenreMapper | None = None,
                  use_musicbrainz: bool = True, original_release: bool = True, lastfm_key: str = "",
-                 use_bandcamp: bool = True, by_artist: bool = True):
+                 use_bandcamp: bool = True, by_artist: bool = True, sources: list | None = None):
         self.token = (discogs_token or "").strip()
         self.lastfm_key = (lastfm_key or "").strip()
         self.use_bandcamp = use_bandcamp
         self.by_artist = by_artist
+        from .tagsources import SOURCES
+        self.sources = list(sources) if sources is not None else list(SOURCES)    # ordinea și ce e pornit
         self._lastfm_t = _Throttle(0.25)
         self._bc_t = _Throttle(1.0)
         self._artist_cache: dict[str, TagResult | None] = {}
@@ -137,10 +139,15 @@ class TagFinder:
     # --- potrivire ----------------------------------------------------------
     @staticmethod
     def _artist_ok(wanted: str, found: str) -> bool:
-        a, b = artist_tokens(wanted), artist_tokens(found)
-        if not a or not b:
+        b = artist_tokens(found)
+        if not b:
             return False
-        return bool(a & b) or any(x in _words(_ascii(found)) for x in a)
+        fw = _words(_ascii(found))
+        for v in artist_variants(wanted):          # și „X aka Y” → „X”, „Y”
+            a = artist_tokens(v)
+            if a and (a & b or any(x in fw for x in a)):
+                return True
+        return False
 
     # --- Discogs -------------------------------------------------------------
     def _discogs_query(self, params: dict) -> list:
@@ -340,20 +347,34 @@ class TagFinder:
         if not artist or not title:
             out.reasons.append("lipsește artistul sau titlul")
             return out
-        steps = [("din fișier", lambda: file_genre(hints, self.mapper)),
-                 ("Discogs", lambda: self.discogs(artist, title)),
-                 ("Bandcamp", lambda: self.bandcamp(hints.get("url", ""), artist)),
-                 ("MusicBrainz", lambda: self.musicbrainz(artist, title, duration)),
-                 ("Spotify", lambda: self.spotify_lookup(artist, title)),
-                 ("Last.fm", lambda: self.lastfm(artist, title)),
-                 ("Discogs după artist", lambda: self.discogs_by_artist(artist) if self.by_artist else None)]
+        from . import tagsources as ts
+        funcs = {"din fișier": lambda: file_genre(hints, self.mapper),
+                 "Discogs": lambda: self.discogs(artist, title),
+                 "Bandcamp": lambda: self.bandcamp(hints.get("url", ""), artist),
+                 "Beatport": lambda: ts.beatport(self, artist, title, duration),
+                 "Traxsource": lambda: ts.traxsource(self, artist, title, duration),
+                 "Juno Download": lambda: ts.juno(self, artist, title, duration),
+                 "Deezer": lambda: ts.deezer(self, artist, title, duration),
+                 "iTunes": lambda: ts.itunes(self, artist, title, duration),
+                 "TheAudioDB": lambda: ts.theaudiodb(self, artist, title, duration),
+                 "MusicBrainz": lambda: self.musicbrainz(artist, title, duration),
+                 "Spotify": lambda: self.spotify_lookup(artist, title),
+                 "Last.fm": lambda: self.lastfm(artist, title),
+                 "SoundCloud": lambda: ts.soundcloud(self, artist, title, duration),
+                 "Discogs după artist": lambda: self.discogs_by_artist(artist) if self.by_artist else None}
+        steps = [(n, funcs[n]) for n in self.sources if n in funcs]
         for name, fn in steps:
             missing = [n for n in need if not self._has(out, n)]
             if not missing:
                 break
             if r_only_genre_step(name) and "genre" not in missing:
                 continue
-            r = fn()
+            try:
+                r = fn()
+            except RuntimeError:
+                raise                      # ex. token Discogs refuzat: se oprește căutarea, cu mesaj
+            except Exception:              # o sursă stricată (site schimbat) nu oprește restul
+                r = None
             if not r:
                 why = skip_reason(name, self, hints)
                 out.reasons.append(f"{name}: {why}")
@@ -478,7 +499,8 @@ def parse_bandcamp(html: str, mapper: GenreMapper, artist: str = "") -> TagResul
 
 
 def r_only_genre_step(name: str) -> bool:
-    return name in ("din fișier", "Last.fm", "Discogs după artist")
+    from .tagsources import GENRE_ONLY
+    return name in GENRE_ONLY
 
 
 def skip_reason(name: str, finder: "TagFinder", hints: dict) -> str:
@@ -497,4 +519,7 @@ def skip_reason(name: str, finder: "TagFinder", hints: dict) -> str:
         return "oprit din Setări"
     if name == "din fișier":
         return "Mood / Grouping nu arată a gen"
+    from .tagsources import SCRAPED
+    if name in SCRAPED:
+        return "negăsită (sau site-ul nu răspunde)"
     return "negăsită"

@@ -60,7 +60,9 @@ def test_file_genre_and_bandcamp():
 
 
 def test_not_found_reasons_and_artist_fallback():
-    f = TagFinder(discogs_token="t", use_musicbrainz=False)
+    f = TagFinder(discogs_token="t", use_musicbrainz=False,
+                  sources=["din fișier", "Discogs", "Bandcamp", "MusicBrainz", "Spotify", "Last.fm",
+                           "Discogs după artist"])
     f._discogs_t.wait = lambda: None
 
     def fake(url, headers=None, retries=3):
@@ -73,3 +75,30 @@ def test_not_found_reasons_and_artist_fallback():
     assert r.genre == "House" and r.sources["genre"] == "Discogs (după artist)"
     assert not r.year                            # după artist: doar genul
     assert any(x.startswith("Discogs:") for x in r.reasons)
+
+
+def test_new_sources_parsing():
+    import json as _j
+    from music_manager.core import tagsources as ts
+    page = ('<script id="__NEXT_DATA__" type="application/json">' + _j.dumps({"props": {"pageProps": {"x": [
+        {"track_name": "It's That Time", "mix_name": "Original Mix", "artists": [{"artist_name": "Marlon Hoffstadt"}],
+         "genre": [{"genre_name": "Techno (Peak Time / Driving)"}], "sub_genre": None,
+         "label": {"label_name": "00 Energy"}, "publish_date": "2023-03-03", "length": 200000,
+         "release": {"release_image_uri": "https://img/b.jpg"}}]}}}) + '</script>')
+    items = ts.parse_beatport(page)
+    assert items and items[0]["genre"].startswith("Techno") and items[0]["label"] == "00 Energy"
+    f = TagFinder(sources=["Beatport"])
+    f._artist_ok = TagFinder._artist_ok
+    import music_manager.core.tagsources as mod
+    old = mod.get_text
+    mod.get_text = lambda finder, url, timeout=20, headers=None: page
+    try:
+        r = f.find("Marlon Hoffstadt aka DJ Daddy Trance", "It's That Time", 200)
+    finally:
+        mod.get_text = old
+    assert r.genre == "Techno" and r.year == "2023" and r.label == "00 Energy" and r.sources["genre"] == "Beatport"
+    order = ts.configured_sources('[["Deezer", false], ["Discogs", true]]')
+    names = [n for n, _ in order]
+    assert ("Deezer", False) in order and names.index("Deezer") < names.index("Discogs")
+    assert len(order) == len(ts.SOURCES)
+    assert ts.title_ok("Glue (Original Mix)", "Glue") and not ts.title_ok("Glue", "Atlas")

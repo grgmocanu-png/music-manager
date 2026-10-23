@@ -73,9 +73,10 @@ def reveal_label() -> str:
         "📂 Arată în Explorer" if sys.platform == "win32" else "📂 Arată în folder")
 
 
-def add_reveal_menu(view, path_fn) -> None:
+def add_reveal_menu(view, path_fn, extra=None) -> None:
     """Click dreapta pe un rând → „Arată în Explorer / Finder” (și „Deschide”).
-    path_fn(index) întoarce calea fișierului de pe rândul respectiv (sau "")."""
+    path_fn(index) întoarce calea fișierului de pe rândul respectiv (sau "").
+    extra(menu, index): adaugă alte acțiuni (ex. „Caută în browser”)."""
     from PySide6.QtWidgets import QMenu
 
     def menu(pos):
@@ -94,6 +95,8 @@ def add_reveal_menu(view, path_fn) -> None:
         a.setEnabled(exists or os.path.isdir(os.path.dirname(path)))
         b = m.addAction("▶ Deschide", lambda: open_file(path))
         b.setEnabled(exists)
+        if extra is not None:
+            extra(m, idx)
         m.exec(view.viewport().mapToGlobal(pos))
 
     view.setContextMenuPolicy(Qt.CustomContextMenu)

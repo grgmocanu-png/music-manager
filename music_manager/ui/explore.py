@@ -12,7 +12,7 @@ import os
 import shutil
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QRadioButton, QSplitter,
@@ -27,30 +27,104 @@ from .common import (
 )
 
 COLS = [
-    ("", "check"), ("Artist", "artist"), ("Title", "title"), ("Mix", "mix"), ("BPM", "bpm"),
+    ("", "check"), ("Artist", "artist"), ("Title", "title"), ("Mix", "mix"), ("Rating", "rating"), ("BPM", "bpm"),
     ("Const.", "const"), ("4/4", "four"), ("Key", "key"), ("Energy", "energy"), ("Puls", "pulse"),
-    ("Drop+P", "dropp"), ("In / Out", "inout"), ("Segment", "segment"), ("Voce", "voice"), ("Tobe", "drums"),
-    ("Tip", "kind"), ("Folosire", "use"), ("Family", "family"), ("Genre", "genre"), ("Year", "year"),
+    ("Drop+P", "dropp"), ("In / Out", "inout"), ("Segment", "segment"),
+    ("Folosire", "use"), ("Family", "family"), ("Genre", "genre"), ("Year", "year"),
     ("Duration", "duration"), ("Folder", "folder"),
 ]
 KEYS = [k for _, k in COLS]
+# capul coloanei rămâne scurt; la hover: numele întreg + ce înseamnă
+HEADER_TIPS = {
+    "check": ("Bifă", "X sau click: bifează piesele pentru Copiază / Mută / Sortează / Șterge."),
+    "artist": ("Artist", ""),
+    "title": ("Titlu", "Portocaliu = piesa care cântă."),
+    "mix": ("Mixabilitate", "Scor 1–10: cât de ușor se mixează (beat stabil, intro / outro ritmice, kick). "
+                            "F2 = pui tu scorul (✎)."),
+    "rating": ("Rating", "Stelele tale: 1–5 (0 șterge), click pe stele sau click dreapta. Se scriu în fișier."),
+    "bpm": ("BPM", "Din Bibliotecă (Traktor / Rekordbox / pus de tine), altfel din analiză."),
+    "const": ("BPM constant", "„da” = tempo-ul nu variază: se sincronizează fără corecții. ±N = cât variază."),
+    "four": ("Kick 4/4", "„da” = kick pe fiecare timp (house, techno). „nu” = breakbeat / fără kick regulat."),
+    "key": ("Tonalitate (Camelot)", ""),
+    "energy": ("Energie 1–10", "Din analiză sau din Comentariu."),
+    "pulse": ("Puls ritmic %", "Cât la sută din piesă are beat clar."),
+    "dropp": ("Beat după drop", "„da” = după drop revine beat-ul (bun pentru mixat din drop)."),
+    "inout": ("Intro / outro ritmic", "Câte secunde de beat are la început / la sfârșit."),
+    "segment": ("Segment mixabil", "Cea mai lungă porțiune cu beat continuu; playerul pornește de acolo."),
+    "use": ("Cum o folosești", "direct · segment · overlay · ½ tempo · intro / outro de set · greu de mixat. "
+                               "F2 = alegi tu (✎)."),
+    "family": ("Familie de gen", ""),
+    "genre": ("Gen (din tag)", ""),
+    "year": ("An", ""),
+    "duration": ("Durată", ""),
+    "folder": ("Folder", "Unde e fișierul pe disc."),
+}
+USES = ["direct", "segment", "overlay", "½ tempo", "intro / outro de set", "greu de mixat"]
+
+
+# --- valorile puse de mână (Mix, Folosire): au prioritate față de analiză ---------
+_MANUAL: dict | None = None
+
+
+def _manual_path() -> str:
+    return os.path.join(data_dir(), "mixabilitate_manual.json")
+
+
+def manual() -> dict:
+    global _MANUAL
+    if _MANUAL is None:
+        try:
+            with open(_manual_path(), encoding="utf-8") as f:
+                _MANUAL = json.load(f) or {}
+        except (OSError, ValueError):
+            _MANUAL = {}
+    return _MANUAL
+
+
+def save_manual():
+    from ..core.safeio import write_json
+    try:
+        write_json(_manual_path(), manual(), ensure_ascii=False)
+    except OSError:
+        pass
 SORT_ROLE = Qt.UserRole + 1
-SORT_LEVELS = [("Family", "family"), ("Genre", "genre"), ("Tip", "kind"), ("Folosire", "use"),
+SORT_LEVELS = [("Family", "family"), ("Genre", "genre"), ("Folosire", "use"),
                ("Mix (≥7 / restul)", "mixband"), ("BPM (din 10 în 10)", "bpm10"), ("Key", "key"), ("Artist", "artist")]
 
 
 class Row:
-    __slots__ = ("track", "family", "bpm", "key", "mix", "checked", "missing")
+    __slots__ = ("track", "family", "bpm", "key", "mix", "checked", "missing", "rating")
 
-    def __init__(self, track, family="", bpm=0.0, key="", missing=False):
+    def __init__(self, track, family="", bpm=0.0, key="", missing=False, rating=None):
         self.track, self.family, self.bpm, self.key = track, family, bpm, key
         self.mix: mx.MixInfo | None = None
         self.checked = False
         self.missing = missing
+        self.rating = int(rating if rating is not None else (getattr(track, "rating", 0) or 0))
 
     @property
     def path(self):
         return self.track.path
+
+    def manual(self) -> dict:
+        return manual().get(_norm(self.path), {}) if self.path else {}
+
+    @property
+    def score(self) -> int:
+        """Scorul: cel pus de tine, altfel cel din analiză (-1 = neanalizată)."""
+        v = self.manual().get("score")
+        if v:
+            return int(v)
+        m = self.mix
+        return m.score if (m is not None and not m.error) else -1
+
+    @property
+    def use(self) -> str:
+        v = self.manual().get("use")
+        if v:
+            return v
+        m = self.mix
+        return m.use if (m is not None and not m.error) else ""
 
     def value(self, key):
         """Valoarea pentru sortarea în foldere."""
@@ -59,12 +133,11 @@ class Row:
             return self.family or "_Necunoscut"
         if key == "genre":
             return self.track.genre or "_Necunoscut"
-        if key == "kind":
-            return (m.kind if m and m.kind else "_Neanalizate")
         if key == "use":
-            return (m.use if m and m.use else "_Neanalizate")
+            return self.use or "_Neanalizate"
         if key == "mixband":
-            return "_Neanalizate" if not m or m.error else ("Mix 7+" if m.score >= 7 else "Mix sub 7")
+            sc = self.score
+            return "_Neanalizate" if sc < 0 else ("Mix 7+" if sc >= 7 else "Mix sub 7")
         if key == "bpm10":
             b = self.bpm or (m.bpm if m else 0)
             return f"{int(b // 10 * 10)}-{int(b // 10 * 10) + 10}" if b else "_Fără BPM"
@@ -100,18 +173,53 @@ class ExploreModel(QAbstractTableModel):
     def headerData(self, s, o, role=Qt.DisplayRole):
         if o == Qt.Horizontal and role == Qt.DisplayRole:
             return COLS[s][0]
+        if o == Qt.Horizontal and role == Qt.ToolTipRole:
+            full, expl = HEADER_TIPS.get(COLS[s][1], (COLS[s][0], ""))
+            return f"<b>{full}</b>" + (f"<br>{expl}" if expl else "")
         return None
 
     def flags(self, index):
         f = Qt.ItemIsSelectable | Qt.ItemIsEnabled
+        col = COLS[index.column()][1]
         if index.column() == 0:
             f |= Qt.ItemIsUserCheckable
+        if col in ("mix", "use") and not self.rows[index.row()].missing:
+            f |= Qt.ItemIsEditable
         return f
 
     def setData(self, index, value, role=Qt.EditRole):
         if role == Qt.CheckStateRole and index.column() == 0:
             self.rows[index.row()].checked = (Qt.CheckState(value) == Qt.Checked)
             self.dataChanged.emit(index, index)
+            return True
+        if role == Qt.EditRole:
+            r = self.rows[index.row()]
+            col = COLS[index.column()][1]
+            v = str(value or "").strip().rstrip("✎").strip()
+            k = _norm(r.path)
+            d = dict(manual().get(k, {}))
+            if col == "mix":
+                if v and not (v.isdigit() and 1 <= int(v) <= 10):
+                    QMessageBox.information(None, "Mixabilitate",
+                                            "Scorul e un număr de la 1 la 10 (gol = cel din analiză).")
+                    return False
+                if v:
+                    d["score"] = int(v)
+                else:
+                    d.pop("score", None)
+            elif col == "use":
+                if v:
+                    d["use"] = v
+                else:
+                    d.pop("use", None)
+            else:
+                return False
+            if d:
+                manual()[k] = d
+            else:
+                manual().pop(k, None)
+            save_manual()
+            self.dataChanged.emit(self.index(index.row(), 0), self.index(index.row(), len(COLS) - 1))
             return True
         return False
 
@@ -124,6 +232,16 @@ class ExploreModel(QAbstractTableModel):
         ok = m is not None and not m.error
         if role == Qt.CheckStateRole and col == "check":
             return Qt.Checked if r.checked else Qt.Unchecked
+        if role == Qt.EditRole:
+            if col == "mix":
+                return str(r.score) if r.score > 0 else ""
+            if col == "use":
+                return r.use
+            return None
+        if role == Qt.DisplayRole and col == "rating":
+            return "★" * r.rating if r.rating else ""
+        if role == Qt.DisplayRole and col in ("mix", "use") and r.manual().get("score" if col == "mix" else "use"):
+            return f"{r.score}✎" if col == "mix" else f"{r.use} ✎"
         if role == Qt.DisplayRole:
             if col == "artist":
                 return t.artist
@@ -164,12 +282,6 @@ class ExploreModel(QAbstractTableModel):
                 return f"{m.intro_s}s / {m.outro_s}s" if (m.intro_s or m.outro_s) else "—"
             if col == "segment":
                 return m.segment or "—"
-            if col == "voice":
-                return f"{m.voice}"
-            if col == "drums":
-                return m.drums
-            if col == "kind":
-                return m.kind
             if col == "use":
                 return m.use
             return ""
@@ -177,13 +289,13 @@ class ExploreModel(QAbstractTableModel):
             if col == "check":
                 return int(r.checked)
             if col == "mix":
-                return m.score if ok else -1
+                return r.score
+            if col == "rating":
+                return r.rating
             if col == "bpm":
                 return r.bpm or (m.bpm if ok else 0)
             if col == "pulse":
                 return m.pulse if ok else -1
-            if col == "voice":
-                return m.voice if ok else -1
             if col == "energy":
                 return m.energy if ok else -1
             if col == "duration":
@@ -197,8 +309,11 @@ class ExploreModel(QAbstractTableModel):
         if role == Qt.ForegroundRole:
             if r.missing:
                 return QBrush(QColor("#888888"))
-            if col == "mix" and ok:
-                return QBrush(QColor("#9fe0d2" if m.score >= 8 else "#ebcf96" if m.score >= 5 else "#d99b8c"))
+            if col == "mix" and r.score > 0:
+                sc = r.score
+                return QBrush(QColor("#9fe0d2" if sc >= 8 else "#ebcf96" if sc >= 5 else "#d99b8c"))
+            if col == "rating":
+                return QBrush(QColor("#e0a458"))
             if col == "const" and ok and m.bpm_const:
                 return QBrush(QColor("#9fe0d2"))
             if col == "title" and r.path == self.playing:
@@ -210,18 +325,20 @@ class ExploreModel(QAbstractTableModel):
             if col == "family" and r.family:
                 from .library_view import family_color
                 return QBrush(family_color(r.family))
-            if col == "use" and ok:
+            if col == "use" and r.use:
                 return QBrush(QColor({"direct": "#9fe0d2", "segment": "#ebcf96", "overlay": "#c79bd6",
-                                      "½ tempo": "#8fa8e0"}.get(m.use, "#b8bcc2")))
+                                      "½ tempo": "#8fa8e0"}.get(r.use, "#b8bcc2")))
         if role == Qt.ToolTipRole:
             if r.missing:
                 return "Nedescărcată — fără fișier nu se poate asculta sau analiza."
+            if col == "mix" and r.manual().get("score"):
+                return f"Pus de tine: {r.score}/10 (analiza: {m.score if ok else '—'}). Click dreapta → Revino la analiză."
             if col == "mix" and m is not None:
                 return (f"Mix {m.score}/10: {m.reasons}" if ok else f"Analiza a eșuat: {m.error}")
-            if col in ("voice", "kind") and ok:
-                return "Estimare din sunet (fără AI): energie în zona vocii, tobe, bas."
+            if col == "use" and r.manual().get("use"):
+                return f"Pus de tine (analiza: {m.use if ok else '—'})."
             return t.path
-        if role == Qt.TextAlignmentRole and col in ("mix", "bpm", "pulse", "voice", "energy", "duration"):
+        if role == Qt.TextAlignmentRole and col in ("mix", "bpm", "pulse", "energy", "duration"):
             return int(Qt.AlignCenter)
         return None
 
@@ -231,7 +348,7 @@ class ExploreProxy(QSortFilterProxyModel):
         super().__init__(parent)
         self.setSortRole(SORT_ROLE)
         self.words: list[str] = []
-        self.f_mix = self.f_const = self.f_four = self.f_vocal = False
+        self.f_mix = self.f_const = self.f_four = self.f_vocal = self.f_rating = False
 
     def filterAcceptsRow(self, row, parent):
         r = self.sourceModel().rows[row]
@@ -242,7 +359,9 @@ class ExploreProxy(QSortFilterProxyModel):
             hay = lib.normalize(" ".join([t.artist, t.title, t.genre, t.comment, t.filename, r.family]))
             if not all(w in hay for w in self.words):
                 return False
-        if self.f_mix and not (ok and m.score >= 7):
+        if self.f_mix and not r.score >= 7:
+            return False
+        if self.f_rating and r.rating < 3:
             return False
         if self.f_const and not (ok and m.bpm_const):
             return False
@@ -278,6 +397,9 @@ class ExploreTable(QTableView):
             return
         if k == Qt.Key_Delete:
             self.view.delete_rows()
+            return
+        if e.text() and e.text() in "012345" and plain and self.state() != QAbstractItemView.EditingState:
+            self.view.set_rating(self.view._selected(), int(e.text()))
             return
         if self.view.player.handle_key(e):
             return
@@ -330,7 +452,8 @@ class ExploreView(QWidget):
         bar.addSpacing(10)
         bar.addWidget(self.b_analyze)
         bar.addSpacing(10)
-        for key, label in (("f_mix", "Mix ≥ 7"), ("f_const", "BPM constant"), ("f_four", "4/4")):
+        for key, label in (("f_mix", "Mix ≥ 7"), ("f_rating", "Rating ≥ ★★★"), ("f_const", "BPM constant"),
+                           ("f_four", "4/4")):
             b = QPushButton(label)
             b.setCheckable(True)
             b.setObjectName("chip")
@@ -350,6 +473,9 @@ class ExploreView(QWidget):
         self.proxy.setSourceModel(self.model)
         self.table = ExploreTable(self)
         self.table.setModel(self.proxy)
+        # dublu click = play; editarea (Mix, Folosire) cu F2
+        self.table.setEditTriggers(QAbstractItemView.EditKeyPressed)
+        self.table.clicked.connect(self._cell_clicked)
         self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -364,9 +490,9 @@ class ExploreView(QWidget):
         h.setSectionsMovable(True)
         h.setContextMenuPolicy(Qt.CustomContextMenu)
         h.customContextMenuRequested.connect(self._header_menu)
-        widths = {"check": 30, "artist": 170, "title": 220, "mix": 44, "bpm": 56, "const": 70, "four": 66, "key": 56,
-                  "energy": 56, "pulse": 54, "dropp": 60, "inout": 80, "segment": 90, "voice": 50, "drums": 56,
-                  "kind": 150, "use": 120, "family": 110, "genre": 110, "year": 50, "duration": 60}
+        widths = {"check": 30, "artist": 170, "title": 220, "mix": 48, "rating": 70, "bpm": 56, "const": 70,
+                  "four": 66, "key": 56, "energy": 56, "pulse": 54, "dropp": 60, "inout": 80, "segment": 90,
+                  "use": 130, "family": 110, "genre": 110, "year": 50, "duration": 60}
         for i, k in enumerate(KEYS):
             if k in widths:
                 self.table.setColumnWidth(i, widths[k])
@@ -374,8 +500,23 @@ class ExploreView(QWidget):
         for i, k in enumerate(KEYS):
             self.table.setColumnHidden(i, k in hidden)
         from .delegates import PillDelegate
+
+        class UsePill(PillDelegate):
+            def createEditor(self, parent, option, index):
+                cb = QComboBox(parent)
+                cb.addItems(["(din analiză)"] + USES)
+                cb.activated.connect(lambda _i=0, cb=cb: (self.commitData.emit(cb), self.closeEditor.emit(cb)))
+                return cb
+
+            def setEditorData(self, editor, index):
+                editor.setCurrentText(index.data(Qt.EditRole) or "(din analiză)")
+
+            def setModelData(self, editor, model, index):
+                t = editor.currentText()
+                model.setData(index, "" if t.startswith("(") else t, Qt.EditRole)
+
         self._delegates = [PillDelegate("badge", self.table), PillDelegate("pill", self.table),
-                           PillDelegate("dot", self.table), PillDelegate("pill", self.table)]
+                           PillDelegate("dot", self.table), UsePill("pill", self.table)]
         for d, k in zip(self._delegates, ("mix", "family", "key", "use")):
             self.table.setItemDelegateForColumn(KEYS.index(k), d)
         self.table.doubleClicked.connect(lambda ix: self.play(self._row_at(ix)))
@@ -401,7 +542,7 @@ class ExploreView(QWidget):
         b_del.clicked.connect(self.delete_rows)
         b_rev = QPushButton(reveal_label())
         b_rev.clicked.connect(lambda: (lambda r: reveal_in_folder(r.path) if r else None)(self._current()))
-        hint = QLabel("X bifă · C copiază · M mută · Del șterge · Space play")
+        hint = QLabel("X bifă · 1–5 rating · F2 editează Mix / Folosire · C copiază · M mută · Del șterge · Space play")
         hint.setObjectName("muted")
         actions = QHBoxLayout()
         actions.addWidget(self.n_checked)
@@ -570,7 +711,7 @@ class ExploreView(QWidget):
     def _lib_rows(self, items) -> list[Row]:
         out = []
         for it in items:
-            out.append(Row(it.track, it.family, it.bpm, it.camelot or it.key, it.missing or it.offline))
+            out.append(Row(it.track, it.family, it.bpm, it.camelot or it.key, it.missing or it.offline, it.rating))
         return out
 
     def _track_rows(self, tracks) -> list[Row]:
@@ -581,7 +722,7 @@ class ExploreView(QWidget):
         for t in tracks:
             it = by.get(_norm(t.path))
             if it is not None:
-                out.append(Row(it.track, it.family, it.bpm, it.camelot or it.key))
+                out.append(Row(it.track, it.family, it.bpm, it.camelot or it.key, rating=it.rating))
             else:
                 from ..core.playlist import to_camelot
                 fam = mapper.family_of(t.genre) if t.genre else ""
@@ -609,7 +750,7 @@ class ExploreView(QWidget):
                 seen.add(k)
                 it = by.get(k)
                 if it is not None:
-                    out.append(Row(it.track, it.family, it.bpm, it.camelot or it.key))
+                    out.append(Row(it.track, it.family, it.bpm, it.camelot or it.key, rating=it.rating))
                     continue
                 t = known.get(k).track if k in known else _safe_track(path)
                 out.extend(self._track_rows([t]))
@@ -745,6 +886,7 @@ class ExploreView(QWidget):
     def analyze_rows(self, todo, force=False):
         from .jobs import Job
         paths = [r.path for r in todo]
+        refs = {r.path: float(r.bpm or 0) for r in todo}      # BPM-ul din Bibliotecă (Traktor / Rekordbox / al tău)
         md, ad = mix_dir(), analysis_dir()
 
         def work(progress, cancelled):
@@ -752,7 +894,7 @@ class ExploreView(QWidget):
                 if cancelled():
                     break
                 if os.path.exists(p):
-                    mx.analyze(p, md, ad, force=force)
+                    mx.analyze(p, md, ad, force=force, ref_bpm=refs.get(p, 0.0))
                 progress(i + 1, len(paths), p)
             return len(paths)
 
@@ -803,6 +945,39 @@ class ExploreView(QWidget):
         if self._lay.indexOf(self.player) < 0:
             self._lay.insertWidget(1, self.player)
         self.focus_playing()
+
+    def selected_paths(self) -> list[str]:
+        return [r.path for r in self._selected() if r.path and not r.missing]
+
+    def focus_paths(self, paths):
+        """Selectează piesele venite din altă pagină; dacă nu sunt în lista afișată, trec pe „Toată muzica”."""
+        want = {_norm(p) for p in paths}
+
+        def rows():
+            return [i for i in range(self.proxy.rowCount())
+                    if (lambda r: r is not None and r.path and _norm(r.path) in want)(self._row_at(self.proxy.index(i, 0)))]
+        found = rows()
+        if not found and self.source != ("all",):
+            self.show_source(("all",))
+            found = rows()
+        if not found and (self.search.text() or any(b.isChecked() for b in self.filters.values())):
+            self.search.clear()
+            for b in self.filters.values():
+                b.setChecked(False)
+            found = rows()
+        if not found:
+            self.status.setText("Piesa selectată nu e în lista din Explore.")
+            return
+        from PySide6.QtCore import QItemSelection, QItemSelectionModel
+        selm = self.table.selectionModel()
+        sel = QItemSelection()
+        for i in found:
+            sel.select(self.proxy.index(i, 0), self.proxy.index(i, len(COLS) - 1))
+        selm.select(sel, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        ix = self.proxy.index(found[0], 1)
+        selm.setCurrentIndex(ix, QItemSelectionModel.NoUpdate)
+        self.table.scrollTo(ix, QAbstractItemView.PositionAtCenter)
+        self.table.setFocus()
 
     def focus_playing(self):
         """Selectează piesa care cântă, dacă e în lista afișată."""
@@ -878,6 +1053,11 @@ class ExploreView(QWidget):
         m.addAction("Bifează / debifează (X)", self.toggle_checks)
         m.addSeparator()
         m.addAction("Analizează mixabilitatea", lambda: self.analyze_rows([r for r in sel if r.path], force=True))
+        rm = m.addMenu("Rating")
+        for n in range(5, -1, -1):
+            rm.addAction(("★" * n) if n else "Fără rating (0)", lambda n=n: self.set_rating(sel, n))
+        if any(r.manual() for r in sel):
+            m.addAction("Revino la analiză (Mix / Folosire)", lambda: self.reset_manual(sel))
         bm = m.addMenu("BPM")
         with_bpm = [r for r in sel if r.path and (r.bpm or (r.mix and r.mix.bpm))]
         bm.addAction("×2", lambda: self.scale_bpm(with_bpm, 2))
@@ -890,9 +1070,52 @@ class ExploreView(QWidget):
         self._fill_dest_menu(mm, move=True)
         m.addAction("Sortează în foldere…", self.sort_into_folders)
         m.addAction(reveal_label(), lambda: reveal_in_folder(sel[0].path))
+        from .dialogs import browser_search_menu
+        browser_search_menu(m, sel[0].track.artist, sel[0].track.display_title)
         m.addSeparator()
         m.addAction("🗑 Șterge din calculator…", self.delete_rows)
         m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _cell_clicked(self, ix):
+        """Click pe stelele din coloana Rating: atâtea stele câte până unde ai dat click."""
+        if KEYS[ix.column()] != "rating":
+            return
+        r = self._row_at(ix)
+        if r is None or not r.path or r.missing:
+            return
+        rect = self.table.visualRect(ix)
+        pos = self.table.viewport().mapFromGlobal(QCursor.pos())
+        star_w = max(8, self.table.fontMetrics().horizontalAdvance("★"))
+        n = max(1, min(5, int((pos.x() - rect.left() - 2) // star_w) + 1))
+        self.set_rating([r], 0 if n == r.rating else n)
+
+    def set_rating(self, rows, n):
+        """Ratingul se scrie în fișier (merge cu piesa la copiere / mutare); dacă e în Bibliotecă, și acolo."""
+        from .dialogs import write_tags_in_background
+        rows = [r for r in rows if r and r.path and not r.missing]
+        if not rows:
+            return
+        lib_items, jobs = [], []
+        for r in rows:
+            r.rating = n
+            it = self.library.by_path.get(_norm(r.path))
+            if it is not None:
+                lib_items.append(it)
+            else:
+                r.track.rating = n
+                jobs.append((r.path, {"rating": str(n)}, None))
+            self.model.refresh(r.path)
+        if lib_items:
+            self.library.set_rating(lib_items, n)
+        if jobs:
+            write_tags_in_background(self, jobs, None, f"Scriu ratingul ({n}★)")
+        self.status.setText(f"Rating {('★' * n) or '0'} la {len(rows)} piese (scris în fișier).")
+
+    def reset_manual(self, rows):
+        for r in rows:
+            manual().pop(_norm(r.path), None)
+            self.model.refresh(r.path)
+        save_manual()
 
     def scale_bpm(self, rows, factor):
         """×2 / ½: se scrie în fișier; dacă piesa e în Bibliotecă, și acolo."""
@@ -950,28 +1173,67 @@ class ExploreView(QWidget):
         last = settings().value("explore/last_dest", "") or ""
         self.transfer(last, True) if last else self._pick_and_transfer(True)
 
+    def _local_then(self, rows, then):
+        """Piesele din afara bibliotecii (stick, alt disc): întâi le copiez / mut pe hard, apoi then(căi)."""
+        outside = [r for r in rows if _norm(r.path) not in self.library.by_path]
+        if not outside:
+            then([r.path for r in rows])
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Playlist")
+        box.setText(f"{len(outside)} din {len(rows)} piese nu sunt pe hard, în biblioteca ta (ex. sunt pe stick).\n\n"
+                    "Playlistul ține doar trimiterea la fișier: dacă scoți stick-ul, piesa apare ca lipsă.")
+        b_copy = box.addButton("Copiază-le pe hard", QMessageBox.AcceptRole)
+        b_move = box.addButton("Mută-le pe hard", QMessageBox.AcceptRole)
+        b_keep = box.addButton("Doar adaugă-le așa", QMessageBox.AcceptRole)
+        box.addButton("Renunță", QMessageBox.RejectRole)
+        last = settings().value("explore/usb_choice", "copy") or "copy"
+        box.setDefaultButton({"copy": b_copy, "move": b_move, "keep": b_keep}.get(last, b_copy))
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked not in (b_copy, b_move, b_keep):
+            return
+        choice = "copy" if clicked is b_copy else "move" if clicked is b_move else "keep"
+        settings().setValue("explore/usb_choice", choice)
+        if choice == "keep":
+            then([r.path for r in rows])
+            return
+        folders = self.library.library_folders()
+        if not folders:
+            QMessageBox.information(self, "Playlist", "N-ai niciun folder de bibliotecă (Setări → Foldere).")
+            return
+        dest = folders[0]
+        if len(folders) > 1:
+            from PySide6.QtWidgets import QInputDialog
+            prev = settings().value("explore/usb_dest", "") or ""
+            idx = folders.index(prev) if prev in folders else 0
+            dest, ok = QInputDialog.getItem(self, "Unde le pun?", "Folderul bibliotecii:", folders, idx, False)
+            if not ok:
+                return
+        settings().setValue("explore/usb_dest", dest)
+        out_keys = {_norm(r.path) for r in outside}
+
+        def after(moves):
+            new = {_norm(a): b for a, b in moves}
+            then([new.get(_norm(r.path), r.path) if _norm(r.path) in out_keys else r.path for r in rows])
+        self.transfer(dest, choice == "move", to_library=True, rows=outside, then=after, confirm=False)
+
     def add_to_playlist(self, pid):
         rows = self.checked_rows()
         if not rows:
             return
-        in_lib = [r.path for r in rows if _norm(r.path) in self.library.by_path]
-        outside = [r for r in rows if _norm(r.path) not in self.library.by_path]
-        self.library.add_to_playlist(pid, [r.path for r in rows])
-        msg = f"Am adăugat {len(rows)} piese în playlist."
-        if outside:
-            msg += (f"\n{len(outside)} nu sunt în folderele bibliotecii: apar în playlist, dar ca să aibă BPM, "
-                    "Key etc. în Bibliotecă copiază-le și într-un folder al bibliotecii.")
-        self.status.setText(msg.replace("\n", " "))
-        if outside:
-            QMessageBox.information(self, "Playlist", msg)
-        del in_lib
+
+        def add(paths):
+            self.library.add_to_playlist(pid, paths)
+            self.status.setText(f"Am adăugat {len(paths)} piese în playlist.")
+        self._local_then(rows, add)
 
     def add_to_new_playlist(self):
         rows = self.checked_rows()
         if rows:
-            self.library.new_playlist([r.path for r in rows])
+            self._local_then(rows, lambda paths: self.library.new_playlist(paths))
 
-    def transfer(self, dest: str, move: bool, to_library=False, rows=None, plan=None):
+    def transfer(self, dest: str, move: bool, to_library=False, rows=None, plan=None, then=None, confirm=True):
         """Copiază / mută fișierele (în fundal, ca activitate). plan = [(sursă, folder destinație)]."""
         rows = rows if rows is not None else self.checked_rows()
         if plan is None:
@@ -986,7 +1248,7 @@ class ExploreView(QWidget):
         if move and n_lib:
             q += (f"\n\n{n_lib} sunt în Bibliotecă (poate și în Traktor). Playlisturile din Manager le urmează; "
                   "în Traktor va trebui să le regăsești cu Relocate.")
-        if QMessageBox.question(self, verb, q) != QMessageBox.Yes:
+        if confirm and QMessageBox.question(self, verb, q) != QMessageBox.Yes:
             return
         from .jobs import Job
 
@@ -1033,6 +1295,8 @@ class ExploreView(QWidget):
             if errors:
                 QMessageBox.warning(self, "Erori", "\n".join(errors[:15]))
             self.model.layoutChanged.emit()
+            if then:
+                then(moves)
         job.succeeded.connect(done)
         job.start()
 
@@ -1043,11 +1307,11 @@ class ExploreView(QWidget):
         rows = [r for r in rows if r and r.path and not r.missing]
         if not rows:
             return
-        dlg = SortDialog(rows, self)
-        if dlg.exec() != QDialog.Accepted:
-            return
-        settings().setValue("explore/sort_dest", dlg.dest)
-        self.transfer(dlg.dest, dlg.move, rows=rows, plan=dlg.plan())
+        # aceeași fereastră ca în Curățenie și Bibliotecă
+        from .sort_tool import items_from_explore, open_sort
+        dlg = open_sort(items_from_explore(rows), self.library, self, self.title.text())
+        if dlg is not None:
+            dlg.on_applied = lambda: (self._scan_cache.clear(), self.show_source(self.source))
 
     # ===== ștergere =====
     def delete_rows(self):
@@ -1098,103 +1362,6 @@ class ExploreView(QWidget):
                 self.library.reload(quiet=True)
         job.succeeded.connect(finished)
         job.start()
-
-
-class SortDialog(QDialog):
-    """Sortează în foldere: destinație, nivelul 1 (implicit Family) și 2, copiere sau mutare, previzualizare."""
-
-    def __init__(self, rows, parent=None):
-        super().__init__(parent)
-        self.rows = rows
-        self.setWindowTitle(f"Sortează în foldere ({len(rows)} piese)")
-        self.resize(640, 560)
-        self.dest = settings().value("explore/sort_dest", "") or ""
-        self.dest_edit = QLineEdit(self.dest)
-        self.dest_edit.setPlaceholderText("Folderul în care se fac subfolderele")
-        b_pick = QPushButton("…")
-        b_pick.clicked.connect(self._pick)
-        drow = QHBoxLayout()
-        drow.addWidget(self.dest_edit, 1)
-        drow.addWidget(b_pick)
-        self.l1 = QComboBox()
-        self.l2 = QComboBox()
-        self.l2.addItem("— nimic —", "")
-        for label, key in SORT_LEVELS:
-            self.l1.addItem(label, key)
-            self.l2.addItem(label, key)
-        self.l1.setCurrentIndex(0)            # Family implicit
-        self.rb_copy = QRadioButton("Copiază (originalele rămân)")
-        self.rb_move = QRadioButton("Mută")
-        self.rb_copy.setChecked(True)
-        g = QButtonGroup(self)
-        g.addButton(self.rb_copy)
-        g.addButton(self.rb_move)
-        self.preview = QTreeWidget()
-        self.preview.setHeaderLabels(["Folder", "Piese"])
-        self.preview.setColumnWidth(0, 420)
-        for w in (self.l1, self.l2):
-            w.currentIndexChanged.connect(self._refresh)
-        form = QFormLayout()
-        form.addRow("Destinație:", drow)
-        form.addRow("Nivelul 1:", self.l1)
-        form.addRow("Nivelul 2:", self.l2)
-        form.addRow("", self.rb_copy)
-        form.addRow("", self.rb_move)
-        note = QLabel("Fișierele își păstrează numele. Piesele fără valoare merg în „_Necunoscut” / „_Neanalizate”.")
-        note.setWordWrap(True)
-        note.setObjectName("muted")
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Sortează")
-        bb.accepted.connect(self._ok)
-        bb.rejected.connect(self.reject)
-        lay = QVBoxLayout(self)
-        lay.addLayout(form)
-        lay.addWidget(note)
-        lay.addWidget(QLabel("Previzualizare:"))
-        lay.addWidget(self.preview, 1)
-        lay.addWidget(bb)
-        self._refresh()
-
-    @property
-    def move(self) -> bool:
-        return self.rb_move.isChecked()
-
-    def _pick(self):
-        d = QFileDialog.getExistingDirectory(self, "Unde fac folderele?", self.dest_edit.text())
-        if d:
-            self.dest_edit.setText(os.path.normpath(d))
-
-    def _parts(self, r) -> list[str]:
-        out = [lib.safe_name(r.value(self.l1.currentData())) or "_Necunoscut"]
-        if self.l2.currentData():
-            out.append(lib.safe_name(r.value(self.l2.currentData())) or "_Necunoscut")
-        return out
-
-    def _refresh(self, *_):
-        self.preview.clear()
-        tree: dict = {}
-        for r in self.rows:
-            node = tree
-            for part in self._parts(r):
-                node = node.setdefault(part, {"__n": 0})
-                node["__n"] += 1
-        def add(parent, d):
-            for k in sorted(x for x in d if x != "__n"):
-                it = QTreeWidgetItem([k, str(d[k]["__n"])])
-                (parent.addChild(it) if parent else self.preview.addTopLevelItem(it))
-                add(it, d[k])
-        add(None, tree)
-        self.preview.expandAll()
-
-    def plan(self) -> list[tuple[str, str]]:
-        return [(r.path, os.path.join(self.dest, *self._parts(r))) for r in self.rows]
-
-    def _ok(self):
-        self.dest = self.dest_edit.text().strip()
-        if not self.dest:
-            QMessageBox.information(self, "Sortează", "Alege folderul de destinație.")
-            return
-        self.accept()
 
 
 def _norm(p: str) -> str:

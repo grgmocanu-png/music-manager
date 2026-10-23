@@ -164,10 +164,10 @@ def test_main_window_smoke(app, tmp_path):
     # conversie
     win.state.send_to_convert.emit([t.path for t in tracks])
     assert len(win.convert.files) == 4
-    assert win.stack.currentWidget() is win.convert
+    assert win.stack.currentWidget() is win._convert_page
     # Explore: toată muzica pe categorii, filtre, bife, sortare în foldere
     ex = win.explore
-    win._go(4)
+    win._go_name("explore")
     assert win.stack.currentWidget() is ex
     ex.show_source(("lib", "all"))
     assert ex.model.rowCount() == len(lv.items)
@@ -178,15 +178,14 @@ def test_main_window_smoke(app, tmp_path):
     ex.filters["f_mix"].setChecked(True)
     assert ex.proxy.rowCount() == 0          # nimic analizat încă
     ex.filters["f_mix"].setChecked(False)
-    from music_manager.ui.explore import SortDialog
-    sd = SortDialog(ex.model.rows, win)
-    sd.dest = str(tmp_path / "sortat")
-    plan = sd.plan()
+    from music_manager.ui.sort_tool import SortFoldersDialog, items_from_explore
+    sd = SortFoldersDialog(items_from_explore(ex.model.rows), lv, win)
+    plan = sd.plan(str(tmp_path / "sortat"))
     assert len(plan) == len(ex.model.rows) and all(p[1].startswith(str(tmp_path / "sortat")) for p in plan)
     assert sd.preview.topLevelItemCount() >= 1
     ex.show_source(("all",))
     ex.rebuild_tree()
-    win._go(2)
+    win._go_name("convert")
     win.convert.preset.setCurrentIndex(2)   # WAV -> avertisment pentru MP3-uri
     assert "comprimate" in win.convert.warning.text()
 
@@ -357,10 +356,10 @@ def test_v093_shared_player_tree_conflicts_windows(app, tmp_path, monkeypatch):
     win.show()
     app.processEvents()
     # același player în Bibliotecă și Explore
-    win._go(4)
+    win._go_name("explore")
     assert win.explore.player is win.library.player
     assert win.library.player.parentWidget() is win.explore
-    win._go(3)
+    win._go_name("library")
     assert win.library.player.parentWidget() is win.library
     # arbore de foldere cu subfoldere (se deschid la cerere)
     ex = win.explore
@@ -405,4 +404,110 @@ def test_v093_shared_player_tree_conflicts_windows(app, tmp_path, monkeypatch):
     win.jobs_button.dialog.hide()
     d.close()
     app.processEvents()
+    win.close()
+
+
+def test_v094_library_explore_cleanup(app, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    from music_manager.core import libdb as ldb
+    from music_manager.ui.main_window import MainWindow
+    win = MainWindow()
+    win.show()
+    app.processEvents()
+    lv = win.library
+    _wait(app, lv.task)
+    lv.timer.stop()
+    root = tmp_path / "Lib"
+    (root / "House").mkdir(parents=True)
+    tracks = _tracks(root / "House")
+    lv.state.folders = [str(root)]
+    lv._tracks = tracks
+    lv.collections = []
+    lv._rebuild_items()
+    lv.rebuild_tree()
+    # bara de sus: ordinea fluxului; Conversia e în Curățenie; Setări din rotiță
+    assert [a for _t, a in win.PAGES][:4] == ["download", "library", "cleanup", "explore"]
+    assert "convert" not in win._nav_buttons and "settings_tab" in win._nav_buttons
+    win._go_name("convert")
+    assert win._nav_buttons["cleanup"].isChecked()
+    # fără „Acapella & vocal” și „Nu sunt în Traktor”; folderele bibliotecii ca arbore
+    texts = [lv.tree.topLevelItem(i).text(0) for i in range(lv.tree.topLevelItemCount())]
+    assert not any("Acapella" in t or "Traktor (" in t for t in texts)
+    top = lv.tree.topLevelItem(0)
+    dirs = [top.child(i) for i in range(top.childCount())]
+    assert dirs and dirs[0].data(0, Qt.UserRole)[0] == "dir"
+    dirs[0].setExpanded(True)
+    app.processEvents()
+    sub = dirs[0].child(0)
+    lv.show_view(tuple(sub.data(0, Qt.UserRole)))
+    assert lv.table.proxy.rowCount() == 4
+    # playlist normal → inteligent (păstrează piesele puse de mână) și înapoi
+    p = lv.db.new_playlist("Mine")
+    p.tracks = [tracks[0].path]
+    p.kind = "smart"
+    p.rules = {"match": "all", "scope": "library",
+               "rules": [{"field": "genre", "op": "este oricare din", "value": "House"}]}
+    _t, items = lv.items_for(("smart", p.id))
+    assert {i.path for i in items} == {tracks[0].path, tracks[2].path}
+    p.rules["scope"] = "own"
+    _t, items = lv.items_for(("smart", p.id))
+    assert items == []                                   # Bicep nu e House
+    lv._freeze(p, lv._resolve([tracks[1].path]))
+    assert p.kind == "manual" and p.tracks == [tracks[1].path]
+    # familii: lista din filtre / editor include și familiile care există doar pe piese
+    from music_manager.ui.library_view import all_families
+    lv.items[0].family = "Reggae & Dub"
+    assert "Reggae & Dub" in all_families()
+    # BPM & Key: lista diferențelor
+    lv.db.extra(tracks[3].path).user_bpm = 60.0
+    lv._rebuild_items()
+    rows = lv.bpm_key_rows()
+    assert any(r["it"].path == tracks[3].path and r["to_file"] for r in rows)
+    from music_manager.ui.library_dialogs import BpmKeyDialog
+    BpmKeyDialog(rows, lv)
+    # selecția te urmărește între pagini
+    win._go_name("library")
+    lv.show_view(("all",))
+    lv.focus_paths([tracks[2].path])
+    assert lv.selected_paths() == [tracks[2].path]
+    win._go_name("explore")
+    ex = win.explore
+    ex.show_source(("lib", "all"))
+    win._go_name("library")
+    win._go_name("explore")
+    assert ex.selected_paths() == [tracks[2].path]
+    # Explore: Mix / Folosire puse de mână, rating, coloane fără Voce / Tobe / Tip
+    from music_manager.ui import explore as exm
+    assert "voice" not in exm.KEYS and "kind" not in exm.KEYS and "rating" in exm.KEYS
+    m = ex.model
+    i = next(k for k, r in enumerate(m.rows) if r.path == tracks[2].path)
+    assert m.setData(m.index(i, exm.KEYS.index("mix")), "8")
+    assert m.rows[i].score == 8 and "✎" in m.data(m.index(i, exm.KEYS.index("mix")))
+    assert m.setData(m.index(i, exm.KEYS.index("use")), "segment") and m.rows[i].use == "segment"
+    ex.reset_manual([m.rows[i]])
+    assert m.rows[i].score == -1
+    assert "Mixabilitate" in m.headerData(exm.KEYS.index("mix"), Qt.Horizontal, Qt.ToolTipRole)
+    ex.set_rating([m.rows[i]], 4)
+    assert m.rows[i].rating == 4 and lv.by_path[ldb.norm_path(tracks[2].path)].rating == 4
+    # Curățenie: cardurile Sortează și Conversie
+    assert "sortare" in win.cleanup.cards and "conversie" in win.cleanup.cards
+    from music_manager.ui.sort_tool import SortFoldersDialog, items_from_library
+    sd = SortFoldersDialog(items_from_library(lv.items), lv, win)
+    plan = sd.plan(str(tmp_path / "out"))
+    assert any(os.path.join("House", "House") in d or d.endswith(os.path.join("House", "House")) for _s, d in plan)
+    # Setări: lista surselor de taguri, familiile editabile
+    st = win.settings_tab
+    assert st.src_list.count() >= 14 and st.fam_editor.list.count() >= 10
+    # Taguri online: suprascriere pe câmp
+    from music_manager.core.tagsearch import TagResult
+    from music_manager.ui.dialogs import TagFinderDialog
+    tf = TagFinderDialog(tracks, None, win)
+    tf.results[2] = TagResult(genre="Disco", year="1999", label="Virgin")
+    tracks[2].year = "2000"
+    tf.o_year.setChecked(True)
+    job = tf._job_for(2)
+    assert job and job[1].get("year") == "1999" and "genre" not in job[1]     # Genul (House) nu se suprascrie
     win.close()

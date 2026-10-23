@@ -280,8 +280,8 @@ def build_items(tracks: list[Track], db: LibraryDB, collections: list[Collection
             if not key and k:
                 key, ksrc = k, src
         it = LibItem(track=t, bpm=round(bpm, 2), key=key, bpm_src=bsrc, key_src=ksrc,
-                     rating=e.rating or dj.rating, color=e.color or dj.color, date_added=e.date_added,
-                     in_traktor=bool(traktor and norm_path(t.path) in traktor.tracks), drops=e.an_drops)
+                     rating=e.rating or dj.rating or getattr(t, "rating", 0), color=e.color or dj.color, date_added=e.date_added,
+                     in_traktor=bool(traktor and traktor.lookup(t.path) is not None), drops=e.an_drops)
         _, c_role, c_energy = parse_comment(t.comment)
         it.energy, it.energy_src = (c_energy, "Comentariu") if c_energy else (e.an_energy, "Analiză" if e.an_energy else "")
         if e.user_energy:

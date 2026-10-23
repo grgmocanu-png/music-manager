@@ -57,6 +57,7 @@ class TagData:
     info: AudioInfo = field(default_factory=AudioInfo)
     cover: tuple | None = None   # (bytes, mime)
     has_cover: bool = False
+    rating: int = 0              # 0..5 stele, din fișier (POPM / RATING)
     url: str = ""                # pagina piesei (ex. Bandcamp), dacă e în taguri
     style: str = ""              # câmpuri personalizate de tip gen/stil (STYLE, SUBGENRE…)
 
@@ -64,6 +65,25 @@ class TagData:
 # câmpuri personalizate care conțin de obicei genul / stilul
 STYLE_KEYS = ("style", "styles", "subgenre", "genre2", "sub-genre", "discogs_style", "discogs style")
 URL_KEYS = ("website", "url", "purchaseurl", "purchase url", "www", "source", "comment_url")
+
+
+TRAKTOR_POPM = "traktor@native-instruments.de"
+_MM_STEPS = [0, 1, 64, 128, 196, 255]
+
+
+def _popm_stars(frames) -> int:
+    """Stelele din POPM: întâi cel scris de Manager, apoi Traktor, apoi oricare (scara Windows)."""
+    by = {str(getattr(f, "email", "") or ""): int(getattr(f, "rating", 0) or 0) for f in frames}
+    if "MusicManager" in by:
+        r = by["MusicManager"]
+        return min(range(6), key=lambda i: abs(_MM_STEPS[i] - r))
+    if TRAKTOR_POPM in by:
+        return max(0, min(5, int(round(by[TRAKTOR_POPM] / 51))))
+    for r in by.values():
+        if r <= 0:
+            return 0
+        return 1 if r < 32 else 2 if r < 96 else 3 if r < 160 else 4 if r < 224 else 5
+    return 0
 
 
 def is_audio_file(path: str) -> bool:
@@ -126,6 +146,7 @@ def read_tags(path: str, want_cover: bool = False) -> TagData:
         comms = tags.getall("COMM")
         if comms:
             raw["comment"] = _first(comms[0].text)
+        data.rating = _popm_stars(tags.getall("POPM"))
         for fid in ("WOAF", "WOAR", "WOAS", "WCOM", "WPUB"):
             for fr in tags.getall(fid):
                 u = str(getattr(fr, "url", "") or "").strip()
@@ -189,6 +210,12 @@ def read_tags(path: str, want_cover: bool = False) -> TagData:
                 if k in lower and _first(lower[k]):
                     raw[name] = _first(lower[k])
                     break
+        rv = _first(lower.get("rating")) if "rating" in lower else ""
+        try:
+            f = float(rv) if rv else 0.0
+            data.rating = int(round(f / 20)) if f > 5 else int(round(f))
+        except ValueError:
+            pass
         for k in STYLE_KEYS:
             if k in lower and _first(lower[k]):
                 data.style = _first(lower[k])
@@ -254,6 +281,9 @@ def write_tags(path: str, fields: dict, cover: tuple | None = None, clear: tuple
             n = max(0, min(5, int(rating)))
             tags.delall("POPM:MusicManager")
             tags.add(POPM(email="MusicManager", rating=[0, 1, 64, 128, 196, 255][n], count=0))
+            # Traktor citește ratingul din POPM-ul lui (51 pe stea)
+            tags.delall(f"POPM:{TRAKTOR_POPM}")
+            tags.add(POPM(email=TRAKTOR_POPM, rating=n * 51, count=0))
         if cover:
             tags.delall("APIC")
             tags.add(APIC(encoding=3, mime=cover[1], type=3, desc="Cover", data=cover[0]))

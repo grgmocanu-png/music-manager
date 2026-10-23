@@ -234,11 +234,17 @@ class SettingsTab(QWidget):
         self.sections.setObjectName("sections")
         self.sections.setFixedWidth(240)
         self.pages = QStackedWidget()
+        self.sections.setSpacing(2)
         for title, w in (("Foldere", page(self._library_box())),
-                         ("Conturi, API-uri, tokenuri", page(sp_box, sl_box, tags_box)),
-                         ("Programe DJ, analiză, aspect", page(self._dj_box())),
-                         ("Genuri și intervale BPM", page(self._genres_box()))):
-            self.sections.addItem(title)
+                         ("Conturi și API", page(sp_box, sl_box, tags_box)),
+                         ("Programe DJ și analiză", page(self._dj_box())),
+                         ("Genuri și BPM", page(self._genres_box())),
+                         ("Aspect", page(self._aspect_box()))):
+            from PySide6.QtCore import QSize
+            from PySide6.QtWidgets import QListWidgetItem
+            item = QListWidgetItem(title)
+            item.setSizeHint(QSize(220, 42))
+            self.sections.addItem(item)
             self.pages.addWidget(w)
         self.sections.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.sections.setCurrentRow(0)
@@ -403,28 +409,71 @@ class SettingsTab(QWidget):
         f = QFormLayout(box)
         f.addRow("Token Discogs:", tw)
         f.addRow("", how)
-        f.addRow("", self.mb)
-        f.addRow("", self.by_artist)
-        f.addRow("", self.bc)
         f.addRow("Cheie Last.fm:", self.lastfm)
         f.addRow("", lf_how)
+        # sursele: ordinea și ce e pornit (prima care găsește un câmp îl dă)
+        from PySide6.QtWidgets import QAbstractItemView, QListWidget, QListWidgetItem
+        from ..core import tagsources as ts
+        self.src_list = QListWidget()
+        self.src_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.src_list.setMinimumHeight(330)
+        for name, on in ts.configured_sources(settings().value("tags/sources", "") or ""):
+            it = QListWidgetItem(f"{name}  —  {ts.NOTES.get(name, '')}" + ("  ⚠ citește site-ul" if name in ts.SCRAPED else ""))
+            it.setData(Qt.UserRole, name)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            it.setCheckState(Qt.Checked if on else Qt.Unchecked)
+            self.src_list.addItem(it)
+        self.src_list.itemChanged.connect(lambda *_: self._save_sources())
+        self.src_list.model().rowsMoved.connect(lambda *_: self._save_sources())
+        b_up, b_dn = QPushButton("↑"), QPushButton("↓")
+        b_up.clicked.connect(lambda: self._move_source(-1))
+        b_dn.clicked.connect(lambda: self._move_source(1))
+        sb = QVBoxLayout()
+        sb.addWidget(b_up)
+        sb.addWidget(b_dn)
+        sb.addStretch()
+        sr = QHBoxLayout()
+        sr.addWidget(self.src_list, 1)
+        sr.addLayout(sb)
+        sw = QWidget()
+        sw.setLayout(sr)
+        sr.setContentsMargins(0, 0, 0, 0)
+        f.addRow("Surse, în ordine:", sw)
+        f.addRow("", self._gray("Bifă = sursa e folosită. Trage sau ↑↓ pentru ordine. O sursă e întrebată doar dacă "
+                                "cele de deasupra n-au găsit ce lipsea. Cele marcate ⚠ citesc pagina publică a "
+                                "site-ului: merg, dar se pot strica dacă site-ul se schimbă."))
         return box
+
+    def _save_sources(self):
+        out = []
+        for i in range(self.src_list.count()):
+            it = self.src_list.item(i)
+            out.append([it.data(Qt.UserRole), it.checkState() == Qt.Checked])
+        settings().setValue("tags/sources", json.dumps(out))
+
+    def _move_source(self, step):
+        i = self.src_list.currentRow()
+        j = i + step
+        if i < 0 or not 0 <= j < self.src_list.count():
+            return
+        it = self.src_list.takeItem(i)
+        self.src_list.insertItem(j, it)
+        self.src_list.setCurrentRow(j)
+        self._save_sources()
 
     def _genres_box(self):
         from .dialogs import families
         box = QGroupBox("Familii de gen")
-        self.fam_label = QLabel(", ".join(families()))
-        self.fam_label.setWordWrap(True)
-        b_fam = QPushButton("Editează familiile și stilurile…")
-        b_fam.clicked.connect(self._edit_genres)
+        from .families_editor import FamiliesEditor
+        self.fam_label = QLabel(", ".join(families()))      # compatibilitate (nu se mai afișează)
+        self.fam_editor = FamiliesEditor()
         note = QLabel("Genul scris în fișier = familia (ex. House). Stilul exact (ex. Deep House) merge în "
                       "Comentariu, împreună cu rolul în set și energia: „Deep House | Peak | E7”. În Bibliotecă, "
                       "filtrul principal e Familia; genurile detaliate rămân vizibile în coloana Gen.")
         note.setWordWrap(True)
         note.setStyleSheet("color: gray;")
         f = QFormLayout(box)
-        f.addRow("Familii:", self.fam_label)
-        f.addRow("", b_fam)
+        f.addRow(self.fam_editor)
         f.addRow("", note)
         # intervale BPM pe familie (doar pentru „BPM de verificat”)
         from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
@@ -449,6 +498,17 @@ class SettingsTab(QWidget):
         note2.setStyleSheet("color: gray;")
         f.addRow("Intervale BPM:", self.bpm_tbl)
         f.addRow("", note2)
+        return box
+
+    def _aspect_box(self):
+        box = QGroupBox("Aspect")
+        f = QFormLayout(box)
+        self.theme = QComboBox()
+        self.theme.addItem("Întunecată", "dark")
+        self.theme.addItem("Deschisă", "light")
+        self.theme.setCurrentIndex(0 if (settings().value("ui/theme", "dark") or "dark") == "dark" else 1)
+        self.theme.currentIndexChanged.connect(self._theme_changed)
+        f.addRow("Temă:", self.theme)
         return box
 
     def _theme_changed(self, _i):
@@ -516,12 +576,11 @@ class SettingsTab(QWidget):
         f.addRow("", self._gray("Primul din listă câștigă. „Fișier” = ce e scris în tag (Serato, Mixed In Key); "
                                 "„Analiză” = analiza făcută de aplicație."))
 
-        self.theme = QComboBox()
-        self.theme.addItem("Întunecată", "dark")
-        self.theme.addItem("Deschisă", "light")
-        self.theme.setCurrentIndex(0 if (settings().value("ui/theme", "dark") or "dark") == "dark" else 1)
-        self.theme.currentIndexChanged.connect(self._theme_changed)
-        f.addRow("Temă:", self.theme)
+        self.auto_bk = QCheckBox("După analiză, scrie BPM-ul și tonalitatea în fișierele care n-au deloc "
+                                 "(doar la piesele care NU sunt în Traktor / Rekordbox)")
+        self.auto_bk.setChecked(settings().value("library/auto_bpmkey", True) not in (False, "false"))
+        self.auto_bk.toggled.connect(lambda v: settings().setValue("library/auto_bpmkey", bool(v)))
+        f.addRow("BPM / Key:", self.auto_bk)
         self.auto_an = QCheckBox("Analizează automat piesele neanalizate la fiecare deschidere a Bibliotecii (BPM, tonalitate, waveform)")
         self.auto_an.setChecked(settings().value("library/auto_analyze2", False) in (True, "true"))
         self.auto_an.toggled.connect(lambda v: settings().setValue("library/auto_analyze2", bool(v)))

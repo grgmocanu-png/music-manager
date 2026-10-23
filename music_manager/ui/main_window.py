@@ -1,4 +1,4 @@
-"""Fereastra principală: bara de sus cu paginile (Download, Curățenie, Conversie, Bibliotecă, Explore, Setări)."""
+"""Fereastra principală: bara de sus Playlisturi › Bibliotecă › Curățenie · Explore · Activități · ⚙."""
 from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, Qt
@@ -16,8 +16,11 @@ from .settings_tab import SettingsTab
 
 
 class MainWindow(QMainWindow):
-    PAGES = [("Download", "download"), ("Curățenie", "cleanup"), ("Conversie", "convert"),
-             ("Bibliotecă", "library"), ("Explore", "explore"), ("Setări", "settings_tab")]
+    # ordinea fluxului: Playlisturi › Bibliotecă › Curățenie; Explore separat; Setări din rotiță.
+    # Conversia e un pas din Curățenie (pagină fără buton propriu în bară).
+    PAGES = [("Playlisturi", "download"), ("Bibliotecă", "library"), ("Curățenie", "cleanup"),
+             ("Explore", "explore"), ("Setări", "settings_tab"), ("Conversie", "convert")]
+    NAV_OF = {"convert": "cleanup"}          # ce buton e aprins când ești pe o pagină fără buton
 
     def __init__(self):
         super().__init__()
@@ -29,6 +32,7 @@ class MainWindow(QMainWindow):
         self.cleanup = CleanupTab(self.state, self)
         self.convert = ConvertTab(self.state, self)
         self.library = LibraryView(self.state, self)
+        self.cleanup.library = self.library
         from .explore import ExploreView
         self.explore = ExploreView(self.state, self.library, self.download, self)
         self.settings_tab = SettingsTab(self.state, self)
@@ -36,7 +40,18 @@ class MainWindow(QMainWindow):
         self.settings_tab.library_changed.connect(lambda: self.library.reload())
         self.download.playlists.changed.connect(self.explore.rebuild_tree)
 
-        # bara de sus (ca în machetă): Manager · Fișiere: Download Curățenie Conversie | Bibliotecă Explore Setări
+        # pagina Conversie, cu drum înapoi spre Curățenie
+        conv = QWidget()
+        cv = QVBoxLayout(conv)
+        cv.setContentsMargins(12, 8, 12, 0)
+        back = QPushButton("← Curățenie")
+        back.setFlat(True)
+        back.setCursor(Qt.PointingHandCursor)
+        back.clicked.connect(lambda: self._go_name("cleanup"))
+        cv.addWidget(back, 0, Qt.AlignLeft)
+        cv.addWidget(self.convert, 1)
+        self._convert_page = conv
+
         top = QWidget()
         top.setObjectName("topbar")
         tl = QHBoxLayout(top)
@@ -45,34 +60,46 @@ class MainWindow(QMainWindow):
         logo = QLabel("Manager")
         logo.setObjectName("logo")
         tl.addWidget(logo)
-        tl.addSpacing(18)
-        lbl = QLabel("FIȘIERE")
-        lbl.setObjectName("navlabel")
-        tl.addWidget(lbl)
+        tl.addSpacing(22)
         self.stack = QStackedWidget()
         self.nav = QButtonGroup(self)
         self.nav.setExclusive(True)
+        self._nav_buttons = {}
         for i, (title, attr) in enumerate(self.PAGES):
-            if attr == "library":
-                sep = QFrame()
-                sep.setFrameShape(QFrame.VLine)
-                sep.setObjectName("navsep")
-                tl.addSpacing(6)
-                tl.addWidget(sep)
-                tl.addSpacing(6)
-            b = QPushButton(title)
+            self.stack.addWidget(self._convert_page if attr == "convert" else getattr(self, attr))
+            if attr == "convert":
+                continue
+            if attr == "settings_tab":
+                b = QPushButton("⚙")
+                b.setObjectName("gear")
+                b.setToolTip("Setări")
+                b.setFixedSize(34, 30)
+            else:
+                b = QPushButton(title)
+                b.setObjectName("navExplore" if attr == "explore" else "nav")
             b.setCheckable(True)
-            b.setObjectName("nav")
             b.setCursor(Qt.PointingHandCursor)
             self.nav.addButton(b, i)
-            tl.addWidget(b)
-            self.stack.addWidget(getattr(self, attr))
+            self._nav_buttons[attr] = b
+            if attr == "explore":
+                tl.addSpacing(40)                      # Explore: separat, în alt stil
+                tl.addWidget(b)
+                tl.addStretch()
+                from .jobs import JobsButton
+                self.jobs_button = JobsButton(self)
+                self.jobs_button.setObjectName("jobs")
+                tl.addWidget(self.jobs_button)
+                tl.addSpacing(8)
+            elif attr == "settings_tab":
+                tl.addWidget(b)
+                tl.addSpacing(8)
+            else:
+                tl.addWidget(b)
+                if attr != "cleanup":
+                    arrow = QLabel("›")
+                    arrow.setObjectName("navarrow")
+                    tl.addWidget(arrow)
         self.nav.idClicked.connect(self._go)
-        tl.addStretch()
-        from .jobs import JobsButton
-        self.jobs_button = JobsButton(self)
-        self.jobs_button.setObjectName("jobs")
-        tl.addWidget(self.jobs_button)
         ver = QLabel(f"v{__version__}")
         ver.setObjectName("muted")
         tl.addWidget(ver)
@@ -85,23 +112,50 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.stack, 1)
         self.setCentralWidget(central)
         self.statusBar().hide()
-        last = int(settings().value("window/page", 3) or 3)
-        self._go(last if 0 <= last < len(self.PAGES) else 3)
+        last = settings().value("window/page_name", "") or "library"
+        self._go_name(last if any(a == last for _t, a in self.PAGES) else "library")
 
         geo = settings().value("window/geometry")
         if isinstance(geo, QByteArray):
             self.restoreGeometry(geo)
 
+    def _index(self, attr) -> int:
+        return next(i for i, (_t, a) in enumerate(self.PAGES) if a == attr)
+
+    def _go_name(self, attr):
+        self._go(self._index(attr))
+
     def _go(self, i):
+        prev = self.PAGES[self.stack.currentIndex()][1] if self.stack.count() else ""
+        attr = self.PAGES[i][1]
+        self._carry_selection(prev, attr)
         self.stack.setCurrentIndex(i)
-        self.nav.button(i).setChecked(True)
-        settings().setValue("window/page", i)
+        b = self._nav_buttons.get(self.NAV_OF.get(attr, attr))
+        if b is not None:
+            b.setChecked(True)
+        settings().setValue("window/page_name", attr)
         self.download.refresh_buttons()
-        if self.PAGES[i][1] == "explore":
+        if attr == "explore":
             self.explore.rebuild_tree()
-        if self.PAGES[i][1] in ("library", "explore"):
+        if attr in ("library", "explore"):
             # același player în ambele pagini: muzica merge mai departe, iar piesa e selectată
-            getattr(self, self.PAGES[i][1]).attach_player()
+            getattr(self, attr).attach_player()
+        if attr in ("library", "explore", "cleanup"):
+            sel = getattr(self, "_carried", None)
+            if sel:
+                self._carried = None
+                getattr(self, attr).focus_paths(sel)
+
+    def _carry_selection(self, prev, nxt):
+        """Piesele pe care ai dat click într-o pagină te urmăresc în cealaltă (Curățenie, Bibliotecă, Explore)."""
+        if prev == nxt or prev not in ("library", "explore", "cleanup"):
+            return
+        try:
+            paths = getattr(self, prev).selected_paths()
+        except Exception:
+            paths = []
+        if paths:
+            self._carried = paths
 
     # compatibilitate: alte taburi cer „du-mă la …”
     @property
@@ -109,6 +163,8 @@ class MainWindow(QMainWindow):
         return self.stack
 
     def show_tab(self, widget):
+        if widget is self.convert:
+            widget = self._convert_page
         i = self.stack.indexOf(widget)
         if i >= 0:
             self._go(i)

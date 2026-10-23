@@ -21,7 +21,7 @@ import numpy as np
 from .safeio import write_json
 from . import analysis as an
 
-MIX_VERSION = 1
+MIX_VERSION = 2          # 2: tempo precis la BPM mare, breakbeat, BPM din Bibliotecă
 WIN, HOP = 8.0, 4.0          # ferestre de analiză (secunde)
 
 ACAPELLA_WORDS = re.compile(r"\b(a ?cap+el+a|acapella|acappella|vocals? only|vocal|vox|spoken|"
@@ -94,36 +94,97 @@ def move_cached(old: str, new: str, cache_dir: str) -> None:
 
 
 # --- analiza -----------------------------------------------------------------
+N_FFT, HOP_F = 1024, 128      # ~86 cadre / secundă la 11 kHz: precizie bună și la 170–200 BPM
+
+
 def _features(x: np.ndarray, sr: int):
-    hop = 256 if len(x) < sr * 480 else 512
-    mag = an._stft_mag(x, 1024, hop)
-    freqs = np.fft.rfftfreq(1024, 1 / sr)
-    fps = sr / hop
-    logm = np.log1p(10 * mag)
-    flux = np.maximum(0, np.diff(logm, axis=0))
-    onset = flux[:, (freqs > 30) & (freqs < 5000)].sum(axis=1)
-    kick = flux[:, (freqs > 30) & (freqs < 160)].sum(axis=1)
-    total = mag[:, (freqs > 30) & (freqs < 5000)].sum(axis=1) + 1e-9
-    low = mag[:, (freqs > 30) & (freqs < 150)].sum(axis=1)
-    vocal = mag[:, (freqs > 300) & (freqs < 3400)].sum(axis=1)
-    return onset, kick, total, low, vocal, fps
+    """Atacurile (toată banda, kick, toba mică / hi-hat) și energiile, calculate pe bucăți (memorie mică)."""
+    freqs = np.fft.rfftfreq(N_FFT, 1 / sr)
+    fps = sr / HOP_F
+    b_all = (freqs > 30) & (freqs < 5000)
+    b_kick = (freqs > 30) & (freqs < 160)
+    b_snare = (freqs > 1500) & (freqs < 5000)
+    b_low = (freqs > 30) & (freqs < 150)
+    b_voc = (freqs > 300) & (freqs < 3400)
+    outs = {k: [] for k in ("onset", "kick", "snare", "total", "low", "vocal")}
+    if len(x) < N_FFT:
+        x = np.pad(x, (0, N_FFT - len(x)))
+    n_frames = 1 + (len(x) - N_FFT) // HOP_F
+    step = max(1, int(sr * 60) // HOP_F)          # ~1 minut de cadre pe bucată
+    prev = None
+    for f0 in range(0, n_frames, step):
+        f1 = min(n_frames, f0 + step)
+        chunk = x[f0 * HOP_F:(f1 - 1) * HOP_F + N_FFT]
+        mag = an._stft_mag(chunk, N_FFT, HOP_F)[: f1 - f0]
+        logm = np.log1p(10 * mag)
+        first = logm[:1] if prev is None else prev
+        flux = np.maximum(0, np.diff(np.vstack([first, logm]), axis=0))
+        prev = logm[-1:]
+        outs["onset"].append(flux[:, b_all].sum(axis=1))
+        outs["kick"].append(flux[:, b_kick].sum(axis=1))
+        outs["snare"].append(flux[:, b_snare].sum(axis=1))
+        outs["total"].append(mag[:, b_all].sum(axis=1) + 1e-9)
+        outs["low"].append(mag[:, b_low].sum(axis=1))
+        outs["vocal"].append(mag[:, b_voc].sum(axis=1))
+    o = {k: (np.concatenate(v) if v else np.zeros(1)) for k, v in outs.items()}
+    return o["onset"], o["kick"], o["snare"], o["total"], o["low"], o["vocal"], fps
 
 
-def _local_tempo(env: np.ndarray, fps: float, lo=70.0, hi=180.0):
-    """(bpm, tărie 0..1) într-o fereastră: autocorelația atacurilor."""
+def _acf(env: np.ndarray):
     e = env - env.mean()
     n = len(e)
-    if n < fps * 3 or not np.any(e):
-        return 0.0, 0.0
+    if n < 8 or not np.any(e):
+        return None
+    # fără atacuri reale (ton continuu, pad, zgomot): nu căutăm puls în zgomotul de calcul
+    p95, med = float(np.percentile(env, 95)), float(np.median(env))
+    if p95 < 1.0 or p95 - med < 0.25 * med:
+        return None
     f = np.fft.rfft(e, 2 * n)
     acf = np.fft.irfft(f * np.conj(f))[:n]
-    acf /= acf[0] + 1e-9
-    lags = np.arange(int(fps * 60 / hi), min(n - 1, int(fps * 60 / lo)) + 1)
+    return acf / (acf[0] + 1e-9)
+
+
+def _peak_near(acf, lag: float, tol: float = 0.04):
+    """Vârful autocorelației lângă un lag (±tol), cu interpolare parabolică. Întoarce (lag precis, valoare)."""
+    if acf is None:
+        return 0.0, 0.0
+    lo, hi = int(max(1, np.floor(lag * (1 - tol)))), int(min(len(acf) - 2, np.ceil(lag * (1 + tol))))
+    if hi <= lo:
+        return 0.0, 0.0
+    i = lo + int(np.argmax(acf[lo:hi + 1]))
+    a, b, c = acf[i - 1], acf[i], acf[i + 1]
+    d = a - 2 * b + c
+    off = 0.5 * (a - c) / d if d < 0 else 0.0
+    return float(i + off), float(max(0.0, b - 0.25 * (a - c) * off))
+
+
+def _local_tempo(env: np.ndarray, fps: float, lo=60.0, hi=220.0):
+    """(bpm, tărie 0..1) într-o fereastră, fără tempo de referință."""
+    acf = _acf(env)
+    if acf is None or len(env) < fps * 3:
+        return 0.0, 0.0
+    lags = np.arange(int(fps * 60 / hi), min(len(acf) - 2, int(fps * 60 / lo)) + 1)
     if len(lags) < 3:
         return 0.0, 0.0
-    vals = acf[lags]
-    i = int(np.argmax(vals))
-    return float(60 * fps / lags[i]), float(max(0.0, vals[i]))
+    i = int(lags[int(np.argmax(acf[lags]))])
+    lag, v = _peak_near(acf, i, 0.02)
+    return (60 * fps / lag if lag else 0.0), v
+
+
+def _at_tempo(env: np.ndarray, fps: float, bpm: float):
+    """Cât de tare pulsează fereastra la tempo-ul dat (sau la dublu / jumătate) și tempo-ul local precis."""
+    acf = _acf(env)
+    if acf is None or not bpm:
+        return 0.0, 0.0
+    best_v, best_b = 0.0, 0.0
+    for mult in (1.0, 2.0, 0.5):
+        b = bpm * mult
+        if not 55 <= b <= 230:
+            continue
+        lag, v = _peak_near(acf, 60 * fps / b)
+        if lag and v > best_v + (0.0 if mult == 1.0 else 0.05):    # preferăm tempo-ul piesei
+            best_v, best_b = v, 60 * fps / lag / mult
+    return best_b, best_v
 
 
 def _fold(b: float, ref: float) -> float:
@@ -138,31 +199,56 @@ def _fold(b: float, ref: float) -> float:
 
 
 def analyze_samples(x: np.ndarray, sr: int = an.SR, bpm: float = 0.0, key: str = "", energy: int = 0,
-                    drops=(), name: str = "") -> MixInfo:
+                    drops=(), name: str = "", _retry: bool = True) -> MixInfo:
     from datetime import datetime
     m = MixInfo(analyzed_at=datetime.now().isoformat(timespec="minutes"), key=key, energy=energy)
     m.duration = len(x) / sr
     if m.duration < 20:
         m.error = "piesă prea scurtă"
         return m
-    onset, kick, total, low, vocal, fps = _features(x, sr)
+    onset, kick, snare, total, low, vocal, fps = _features(x, sr)
     if not bpm:
         bpm, _c = an.estimate_bpm(x, sr, 70, 180)
-    m.bpm = bpm
+        # piese rapide (DnB, hardcore): estimarea poate ieși pe jumătate — verificăm dublul
+        if bpm and bpm < 115:
+            acf = _acf(onset[: int(fps * 90)])
+            _l1, v1 = _peak_near(acf, 60 * fps / bpm)
+            _l2, v2 = _peak_near(acf, 60 * fps / (bpm * 2))
+            if v2 > v1 * 0.9 and bpm * 2 <= 230:
+                bpm *= 2
+    m.bpm = round(bpm, 2) if bpm else 0.0
     win, hop = int(WIN * fps), int(HOP * fps)
     starts = list(range(0, max(1, len(onset) - win), hop)) or [0]
     strengths, tempos, kicks = [], [], []
     for s0 in starts:
-        b, st = _local_tempo(onset[s0:s0 + win], fps)
-        kb, kst = _local_tempo(kick[s0:s0 + win], fps)
+        if bpm:
+            b, st = _at_tempo(onset[s0:s0 + win], fps, bpm)
+            _b2, st2 = _at_tempo(snare[s0:s0 + win], fps, bpm)   # breakbeat: toba mică / hi-hat
+            st = max(st, st2 * 0.9)
+            _kb, kst = _at_tempo(kick[s0:s0 + win], fps, bpm)
+        else:
+            b, st = _local_tempo(onset[s0:s0 + win], fps)
+            _kb, kst = _local_tempo(kick[s0:s0 + win], fps)
         strengths.append(st)
         tempos.append(_fold(b, bpm))
         kicks.append(kst)
     strengths, tempos, kicks = np.array(strengths), np.array(tempos), np.array(kicks)
-    pulse_w = strengths > 0.30
+    pulse_w = strengths > 0.22
     if bpm:
-        pulse_w &= np.abs(tempos - bpm) < max(3.0, bpm * 0.04)
+        pulse_w &= np.abs(tempos - bpm) < max(2.5, bpm * 0.025)
     m.pulse = int(round(100 * pulse_w.mean()))
+    if _retry and bpm and m.pulse < 40:
+        # BPM-ul primit poate fi greșit (ex. 100 în loc de 150): dacă piesa pulsează clar la alt tempo, îl folosim
+        free = [(_local_tempo(onset[s0:s0 + win], fps)) for s0 in starts]
+        good = [b for b, st in free if st > 0.22 and b]
+        if len(good) >= 0.5 * len(starts):
+            med = float(np.median(good))
+            ratio = med / bpm
+            if not any(abs(ratio - r) < 0.03 for r in (0.5, 1.0, 2.0)):
+                m2 = analyze_samples(x, sr, round(med, 1), key, energy, drops, name, _retry=False)
+                if m2.pulse > m.pulse + 20:
+                    m2.reasons = (f"BPM {bpm:g} nu se potrivește, piesa e la ~{m2.bpm:g}; " + m2.reasons).strip("; ")
+                    return m2
     if m.pulse < 10:
         m.bpm = 0.0          # fără puls, „BPM-ul” n-are sens
     # BPM constant: cât variază tempo-ul local pe porțiunile cu puls
@@ -172,7 +258,8 @@ def analyze_samples(x: np.ndarray, sr: int = an.SR, bpm: float = 0.0, key: str =
         m.bpm_const = m.bpm_drift <= 1.0
     # 4/4: kick regulat la tempo-ul piesei
     kick_ok = float(np.mean(kicks[pulse_w])) if pulse_w.any() else 0.0
-    m.four = "da" if (m.pulse >= 60 and kick_ok > 0.30) else ("probabil" if m.pulse >= 30 else "nu")
+    m.four = "da" if (m.pulse >= 60 and kick_ok > 0.30) else ("probabil" if (m.pulse >= 30 and kick_ok > 0.18)
+                                                              else "nu")
     m.drums = "da" if m.pulse >= 50 else ("puțin" if m.pulse >= 20 else "nu")
     # intro / outro ritmic: ferestre cu puls de la început / de la sfârșit
     def run_len(flags):
@@ -242,7 +329,11 @@ def analyze_samples(x: np.ndarray, sr: int = an.SR, bpm: float = 0.0, key: str =
         reasons.append(f"beat stabil la {m.bpm:g}")
     elif m.pulse >= 30:
         reasons.append(f"tempo variabil (±{m.bpm_drift:g})")
-    sc += {"da": 1.5, "probabil": 0.7}.get(m.four, 0)
+    if m.four == "nu" and m.pulse >= 60 and m.bpm_const:
+        sc += 1.2                       # breakbeat stabil (DnB, jungle, breaks): se mixează bine și fără 4/4
+        reasons.append("breakbeat stabil")
+    else:
+        sc += {"da": 1.5, "probabil": 0.7}.get(m.four, 0)
     sc += min(m.intro_s, 16) / 16 + min(m.outro_s, 16) / 16
     if m.intro_s >= 8:
         reasons.append(f"intro ritmic de {m.intro_s}s")
@@ -272,7 +363,8 @@ def analyze_samples(x: np.ndarray, sr: int = an.SR, bpm: float = 0.0, key: str =
     return m
 
 
-def analyze(path: str, cache_dir: str, analysis_dir: str, force: bool = False) -> tuple[MixInfo, object]:
+def analyze(path: str, cache_dir: str, analysis_dir: str, force: bool = False,
+            ref_bpm: float = 0.0) -> tuple[MixInfo, object]:
     """Mixabilitatea unei piese (cu cache). Face și analiza de bază (BPM, cheie, waveform) dacă lipsește,
     decodând fișierul o singură dată. Întoarce (MixInfo, Analysis)."""
     if not force:
@@ -285,7 +377,9 @@ def analyze(path: str, cache_dir: str, analysis_dir: str, force: bool = False) -
         if base is None or base.error:
             base = an.analyze_samples(x)
             an.save_cached(path, analysis_dir, base)
-        m = analyze_samples(x, an.SR, base.bpm, base.key, base.energy, base.drops, os.path.basename(path))
+        # BPM-ul de referință: cel din Bibliotecă (Traktor / Rekordbox / pus de tine), altfel din analiză
+        m = analyze_samples(x, an.SR, ref_bpm or base.bpm, base.key, base.energy, base.drops,
+                            os.path.basename(path))
     except Exception as e:  # noqa: BLE001
         from datetime import datetime
         m = MixInfo(error=str(e) or e.__class__.__name__, analyzed_at=datetime.now().isoformat(timespec="minutes"))

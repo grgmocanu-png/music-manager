@@ -289,3 +289,104 @@ class TraktorChangesDialog(QDialog):
         if jobs and self.on_write:
             self.on_write(jobs)
         self.accept()
+
+
+class BpmKeyDialog(QDialog):
+    """BPM / tonalitatea din Manager față de fișier și față de Traktor / Rekordbox.
+
+    - „În fișier”: bifezi ce scriu în taguri (bun pentru piesele noi, Explore, CDJ fără export).
+    - „Diferit de Traktor / Rekordbox”: acolo valoarea se corectează în programul DJ
+      (ele țin BPM-ul și beatgrid-ul în baza lor; nu recitesc tagul din fișier).
+    """
+
+    def __init__(self, rows, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"BPM & Key — {len(rows)} piese cu diferențe")
+        self.resize(1150, 620)
+        self.rows = rows
+        self.on_write = None
+        info = QLabel("<b>Scrie în fișier</b>: valoarea din Manager ajunge în tagurile fișierului. Piesele care sunt "
+                      "în Traktor / Rekordbox sunt <b>debifate</b> implicit: acele programe își țin BPM-ul și "
+                      "beatgrid-ul în baza lor și nu recitesc tagul — acolo corectezi din programul DJ "
+                      "(×2 / ÷2 în editorul de beatgrid). Coloana „Traktor / Rekordbox” îți arată ce au ele.")
+        info.setWordWrap(True)
+        self.show_f = QComboBox()
+        self.show_f.addItem("Arată: tot", "all")
+        self.show_f.addItem("Arată: de scris în fișier", "file")
+        self.show_f.addItem("Arată: diferit de Traktor / Rekordbox (de corectat acolo)", "dj")
+        self.show_f.currentIndexChanged.connect(self._filter)
+        self.table = _table(["", "Piesă", "În fișier", "În Manager", "Sursa", "Traktor / Rekordbox"],
+                            (28, 380, 110, 110, 130))
+        add_space_toggle(self.table, 0)
+        self.table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            it = r["it"]
+            fb, fk = r["file"]
+            mb, mk = r["mgr"]
+            in_dj = bool(r["dj"])
+            self.table.setItem(i, 0, _item("", check=(r["to_file"] and not in_dj)) if r["to_file"]
+                               else _item(""))
+            self.table.setItem(i, 1, _item(f"{it.track.artist} - {it.track.display_title}", tooltip=it.path))
+            self.table.setItem(i, 2, _item(f"{fb:g} · {fk or '—'}" if fb else f"— · {fk or '—'}", "gray"))
+            self.table.setItem(i, 3, _item(f"{mb:g} · {mk or '—'}" if mb else f"— · {mk or '—'}",
+                                           "#27ae60" if r["to_file"] else None))
+            self.table.setItem(i, 4, _item(" / ".join(x for x in r["src"] if x)))
+            dj = "; ".join(f"{s}: {b:g} · {k or '—'}" for s, b, k in r["dj"]) or "—"
+            self.table.setItem(i, 5, _item(dj, "#e0a458" if r["dj_diff"] else "gray",
+                                           tooltip="Diferit de Manager — corectează în programul DJ"
+                                           if r["dj_diff"] else None))
+        sel = QHBoxLayout()
+        sel.addWidget(self.show_f)
+        b_all = QPushButton("Bifează tot ce se poate scrie")
+        b_all.clicked.connect(lambda: self._set(True))
+        b_none = QPushButton("Debifează tot")
+        b_none.clicked.connect(lambda: self._set(False))
+        sel.addWidget(b_all)
+        sel.addWidget(b_none)
+        sel.addStretch()
+        bb = QHBoxLayout()
+        bb.addStretch()
+        close = QPushButton("Închide")
+        close.clicked.connect(self.reject)
+        b_write = QPushButton("Scrie bifatele în fișiere")
+        b_write.setObjectName("primary")
+        b_write.clicked.connect(self.write)
+        bb.addWidget(close)
+        bb.addWidget(b_write)
+        lay = QVBoxLayout(self)
+        lay.addWidget(info)
+        lay.addLayout(sel)
+        lay.addWidget(self.table, 1)
+        lay.addLayout(bb)
+
+    def _set(self, on):
+        for i, r in enumerate(self.rows):
+            if r["to_file"] and not self.table.isRowHidden(i):
+                self.table.item(i, 0).setCheckState(Qt.Checked if on else Qt.Unchecked)
+
+    def _filter(self):
+        f = self.show_f.currentData()
+        for i, r in enumerate(self.rows):
+            hide = (f == "file" and not r["to_file"]) or (f == "dj" and not r["dj_diff"])
+            self.table.setRowHidden(i, hide)
+
+    def write(self):
+        jobs = []
+        for i, r in enumerate(self.rows):
+            c = self.table.item(i, 0)
+            if not r["to_file"] or c is None or c.checkState() != Qt.Checked:
+                continue
+            mb, mk = r["mgr"]
+            f = {}
+            if mb:
+                f["bpm"] = str(int(round(mb)))
+            if mk:
+                f["key"] = r["it"].key or mk
+            if f:
+                jobs.append((r["it"].path, f, None))
+        if not jobs:
+            QMessageBox.information(self, "BPM & Key", "N-ai bifat nimic de scris.")
+            return
+        if self.on_write:
+            self.on_write(jobs)
+        self.accept()

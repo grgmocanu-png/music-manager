@@ -14,7 +14,7 @@ from typing import Callable, Iterable
 from .safeio import write_json
 from . import tags as tagmod
 
-CACHE_VERSION = 4   # 4: Mood, Grouping, URL, stil personalizat
+CACHE_VERSION = 5   # 4: Mood, Grouping, URL, stil personalizat; 5: rating din fișier
 
 
 @dataclass
@@ -35,6 +35,7 @@ class Track:
     grouping: str = ""
     url: str = ""                # pagina piesei din taguri (ex. Bandcamp)
     tag_style: str = ""          # câmp personalizat STYLE / SUBGENRE din fișier
+    rating: int = 0              # stelele scrise în fișier (POPM / RATING)
     has_cover: bool = False
     duration: float = 0.0
     bitrate: int = 0
@@ -81,7 +82,7 @@ def track_from_file(path: str) -> Track:
         for k, v in data.fields.items():
             setattr(t, k, v)
         t.has_cover = data.has_cover
-        t.url, t.tag_style = data.url, data.style
+        t.url, t.tag_style, t.rating = data.url, data.style, data.rating
         i = data.info
         t.duration, t.bitrate = i.duration, i.bitrate
         t.sample_rate, t.bits_per_sample, t.lossless = i.sample_rate, i.bits_per_sample, i.lossless
