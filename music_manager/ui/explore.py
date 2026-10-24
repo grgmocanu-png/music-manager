@@ -655,7 +655,7 @@ class ExploreView(QWidget):
         if online:
             oh = add(None, "PLAYLISTURI ONLINE", ("hdr",), True)
             for p in online:
-                add(oh, f"{p.name} · {'YouTube' if p.source == 'youtube' else 'Spotify'}", ("online", p.id))
+                add(oh, f"{p.name} · { {'youtube': 'YouTube', 'tidal': 'TIDAL'}.get(p.source, 'Spotify') }", ("online", p.id))
             oh.setExpanded(True)
         from .settings_tab import download_dir
         dl = download_dir()

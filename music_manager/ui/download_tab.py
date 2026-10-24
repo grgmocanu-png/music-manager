@@ -267,7 +267,7 @@ class PlaylistButton(QFrame):
         super().__init__(parent)
         self.pid = p.id
         self.setFrameShape(QFrame.StyledPanel)
-        tag = "▶ YouTube" if p.source == "youtube" else "● Spotify"
+        tag = {"youtube": "▶ YouTube", "tidal": "◆ TIDAL"}.get(p.source, "● Spotify")
         self.btn = QPushButton(f"{p.name}")
         self.btn.setToolTip(tag)
         self.btn.setStyleSheet("text-align:left; padding:6px 10px; font-weight:bold;")
@@ -277,12 +277,13 @@ class PlaylistButton(QFrame):
         more.setText("⋯")
         more.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(more)
-        for label, key in (("Deschide pe YouTube" if p.source == "youtube" else "Deschide în Spotify", "open"),
+        for label, key in (({"youtube": "Deschide pe YouTube", "tidal": "Deschide în TIDAL"}.get(p.source,
+                                                                                            "Deschide în Spotify"), "open"),
                            ("Deschide folderul", "folder"), ("Mută mai sus", "up"),
                            ("Mută mai jos", "down"), ("Scoate din listă", "remove")):
             menu.addAction(label, lambda k=key: self.action.emit(k, self.pid))
         more.setMenu(menu)
-        color = "#c4302b" if p.source == "youtube" else "#1db954"
+        color = {"youtube": "#c4302b", "tidal": "#33c3c3"}.get(p.source, "#1db954")
         info = f"<span style='color:{color}'>{tag}</span> · " + p.last_update_label
         if p.last_update:
             info += f"<br>{p.last_total} piese · {p.last_missing} lipsă"
@@ -494,12 +495,14 @@ class PlaylistsPanel(TrackTableBase):
                 self.changed.emit()
 
     def add_playlist(self):
+        from ..core import tidal as td
         text = self.link.text()
-        source = "youtube" if yt.is_youtube(text) else "spotify"
-        pid = yt.parse_playlist_id(text) if source == "youtube" else sp.parse_playlist_id(text)
+        source = "youtube" if yt.is_youtube(text) else ("tidal" if td.is_tidal(text) else "spotify")
+        pid = {"youtube": yt.parse_playlist_id, "tidal": td.parse_playlist_id}.get(source, sp.parse_playlist_id)(text)
         if not pid:
-            QMessageBox.information(self, "Playlist", "Linkul nu pare a fi un playlist Spotify sau YouTube.\n"
+            QMessageBox.information(self, "Playlist", "Linkul nu pare a fi un playlist Spotify, TIDAL sau YouTube.\n"
                                     "Spotify: ⋯ → Share → Copy link to playlist.\n"
+                                    "TIDAL: ⋯ → Share → Copy playlist link.\n"
                                     "YouTube: deschide playlistul și copiază adresa (conține „list=”).")
             return
         url = text.strip()
@@ -567,18 +570,24 @@ class PlaylistsPanel(TrackTableBase):
             return
         ids = [p.id for p in self.store.items]
         sp_ok = True
-        if any(p.source != "youtube" for p in self.store.items):
+        if any(p.source == "spotify" for p in self.store.items):
             client = spotify_client()
             sp_ok = bool(client and client.logged_in)
-        skipped = [p.name for p in self.store.items if p.source != "youtube" and not sp_ok]
-        ids = [p.id for p in self.store.items if p.source == "youtube" or sp_ok]
+        from .settings_tab import tidal_client
+        tc = tidal_client()
+        td_ok = bool(tc and tc.configured)
+
+        def ok(p):
+            return p.source == "youtube" or (p.source == "tidal" and td_ok) or (p.source == "spotify" and sp_ok)
+        skipped = [p.name for p in self.store.items if not ok(p)]
+        ids = [p.id for p in self.store.items if ok(p)]
         if not ids:
             QMessageBox.information(self, "Verifică toate", "Nu am ce verifica" +
                                     (" — conectează Spotify din Setări." if skipped else "."))
             return
         if skipped:
-            QMessageBox.information(self, "Verifică toate", f"Sar peste {len(skipped)} playlisturi Spotify: "
-                                    "nu ești conectat (Setări → Conturi).")
+            QMessageBox.information(self, "Verifică toate", f"Sar peste {len(skipped)} playlisturi: Spotify sau "
+                                    "TIDAL nu e configurat (Setări → Conturi și API).")
         self._verify_queue = ids
         self._verify_total = len(ids)
         self._verify_next()
@@ -612,8 +621,17 @@ class PlaylistsPanel(TrackTableBase):
         if not saved:
             return
         is_yt = saved.source == "youtube"
+        is_td = saved.source == "tidal"
         client = None
-        if not is_yt:
+        if is_td:
+            from .settings_tab import tidal_client
+            client = tidal_client()
+            if not (client and client.configured):
+                QMessageBox.information(self, "TIDAL", "Pune întâi Client ID și Client Secret TIDAL în "
+                                        "Setări → Conturi și API.")
+                self.refresh_buttons()
+                return
+        elif not is_yt:
             client = spotify_client()
             if not (client and client.logged_in):
                 QMessageBox.information(self, "Spotify", "Mai întâi conectează Spotify din tabul Setări.")
@@ -641,7 +659,7 @@ class PlaylistsPanel(TrackTableBase):
                 progress(0, 0, "Citesc playlistul de pe YouTube…")
                 pl = yt.fetch_playlist(saved.url or pid, lambda d, t: progress(d, t, f"Citesc playlistul: {d}/{t}"))
             else:
-                progress(0, 0, "Citesc playlistul din Spotify…")
+                progress(0, 0, "Citesc playlistul din " + ("TIDAL…" if is_td else "Spotify…"))
                 pl = client.get_playlist(pid, lambda d, t: progress(d, t, f"Citesc playlistul: {d}/{t}"))
             progress(0, 0, "Compar cu muzica ta…")
             cache = lib.LibraryCache(os.path.join(data_dir(), "biblioteca.json"))

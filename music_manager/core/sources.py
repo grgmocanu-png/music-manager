@@ -75,10 +75,16 @@ class SavedPlaylist:
     def web_url(self) -> str:
         if self.source == "youtube":
             return self.url or f"https://www.youtube.com/playlist?list={self.id}"
+        if self.source == "tidal":
+            return self.url or f"https://tidal.com/playlist/{self.id}"
         return self.url or f"https://open.spotify.com/playlist/{self.id}"
 
     def track_url(self, tid: str) -> str:
-        return f"https://youtu.be/{tid}" if self.source == "youtube" else f"https://open.spotify.com/track/{tid}"
+        if self.source == "youtube":
+            return f"https://youtu.be/{tid}"
+        if self.source == "tidal":
+            return f"https://tidal.com/track/{tid.split(':', 1)[-1]}"
+        return f"https://open.spotify.com/track/{tid}"
 
     def mark_seen(self, ids) -> None:
         s = set(self.seen)

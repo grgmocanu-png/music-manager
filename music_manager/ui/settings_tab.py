@@ -49,6 +49,28 @@ def spotify_redirect() -> str:
     return sp.make_redirect_uri(spotify_port(), spotify_path())
 
 
+def tidal_client():
+    """Clientul TIDAL din Setări (sau None dacă nu sunt puse codurile)."""
+    from ..core import tidal as td
+    cid = (settings().value("tidal/client_id", "") or "").strip()
+    sec = (settings().value("tidal/client_secret", "") or "").strip()
+    if not cid:
+        return None
+    try:
+        tokens = json.loads(settings().value("tidal/tokens", "") or "{}")
+    except ValueError:
+        tokens = {}
+
+    def save(tok):
+        settings().setValue("tidal/tokens", json.dumps(tok))
+    try:
+        port = int(settings().value("tidal/port", td.REDIRECT_PORT) or td.REDIRECT_PORT)
+    except (TypeError, ValueError):
+        port = td.REDIRECT_PORT
+    return td.TidalClient(cid, sec, tokens, on_tokens=save, country=settings().value("tidal/country", "RO") or "RO",
+                          redirect_port=port)
+
+
 def download_dir() -> str:
     return settings().value("download/dir", "") or ""
 
@@ -164,6 +186,7 @@ class SettingsTab(QWidget):
             lambda: (settings().setValue("slsk/sockseek_path", self.ss_path.text().strip()), self._refresh()))
         self.ss_status = QLabel()
 
+        td_box = self._tidal_box()
         sl_box = QGroupBox("Soulseek")
         fl = QFormLayout(sl_box)
         fl.addRow("Utilizator:", self.s_user)
@@ -236,7 +259,7 @@ class SettingsTab(QWidget):
         self.pages = QStackedWidget()
         self.sections.setSpacing(2)
         for title, w in (("Foldere", page(self._library_box())),
-                         ("Conturi și API", page(sp_box, sl_box, tags_box)),
+                         ("Conturi și API", page(sp_box, td_box, sl_box, tags_box)),
                          ("Programe DJ și analiză", page(self._dj_box())),
                          ("Genuri și BPM", page(self._genres_box())),
                          ("Aspect", page(self._aspect_box()))):
@@ -320,6 +343,101 @@ class SettingsTab(QWidget):
         settings().setValue("spotify/tokens", "{}")
         self._refresh()
         self.spotify_changed.emit()
+
+    # ---------- TIDAL ----------
+    def _tidal_box(self):
+        from ..core import tidal as td
+        box = QGroupBox("TIDAL")
+        f = QFormLayout(box)
+        how = QLabel('Pentru playlisturile TIDAL: intri pe <a href="https://developer.tidal.com">developer.tidal.com</a>, '
+                     "te loghezi cu contul TIDAL, apeși <i>Create app</i> (nume oricare, ex. Manager) și copiezi aici "
+                     "<b>Client ID</b> și <b>Client Secret</b>. Pentru playlisturi private: la aplicație adaugi "
+                     "Redirect URI-ul de mai jos și bifezi scope-urile <i>playlists.read</i> și <i>user.read</i>, apoi "
+                     "apeși „Conectează-te”. Codurile rămân doar pe calculatorul ăsta.")
+        how.setWordWrap(True)
+        how.setOpenExternalLinks(True)
+        self.td_id = QLineEdit(settings().value("tidal/client_id", "") or "")
+        self.td_secret = QLineEdit(settings().value("tidal/client_secret", "") or "")
+        self.td_secret.setEchoMode(QLineEdit.Password)
+        self.td_country = QLineEdit(settings().value("tidal/country", "RO") or "RO")
+        self.td_country.setMaximumWidth(60)
+        self.td_country.setToolTip("Țara contului (2 litere, ex. RO, DE, US) — TIDAL arată piesele disponibile acolo.")
+        for w, k in ((self.td_id, "tidal/client_id"), (self.td_secret, "tidal/client_secret"),
+                     (self.td_country, "tidal/country")):
+            w.editingFinished.connect(lambda w=w, k=k: (settings().setValue(k, w.text().strip()), self._td_refresh()))
+        port = QSpinBox()
+        port.setRange(1024, 65535)
+        port.setValue(int(settings().value("tidal/port", td.REDIRECT_PORT) or td.REDIRECT_PORT))
+        uri = QLineEdit()
+        uri.setReadOnly(True)
+
+        def upd(v=None):
+            settings().setValue("tidal/port", port.value())
+            uri.setText(td.make_redirect_uri(port.value(), "tidal"))
+        port.valueChanged.connect(upd)
+        upd()
+        b_copy = QPushButton("Copiază")
+        b_copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(uri.text()))
+        urow = QHBoxLayout()
+        urow.addWidget(QLabel("port"))
+        urow.addWidget(port)
+        urow.addWidget(uri, 1)
+        urow.addWidget(b_copy)
+        uw = QWidget()
+        uw.setLayout(urow)
+        urow.setContentsMargins(0, 0, 0, 0)
+        self.td_status = QLabel()
+        self.td_login = QPushButton("Conectează-te la TIDAL (pentru playlisturi private)")
+        self.td_login.clicked.connect(self._td_do_login)
+        self.td_logout = QPushButton("Deconectează")
+        self.td_logout.clicked.connect(lambda: (settings().setValue("tidal/tokens", "{}"), self._td_refresh()))
+        lrow = QHBoxLayout()
+        lrow.addWidget(self.td_login)
+        lrow.addWidget(self.td_logout)
+        lrow.addStretch()
+        lw = QWidget()
+        lw.setLayout(lrow)
+        lrow.setContentsMargins(0, 0, 0, 0)
+        f.addRow("", how)
+        f.addRow("Client ID:", self.td_id)
+        f.addRow("Client Secret:", self.td_secret)
+        f.addRow("Țara:", self.td_country)
+        f.addRow("Redirect URI:", uw)
+        f.addRow("", lw)
+        f.addRow("", self.td_status)
+        self._td_refresh()
+        return box
+
+    def _td_refresh(self):
+        c = tidal_client()
+        if c is None or not c.configured:
+            self.td_status.setText("Nu sunt puse codurile TIDAL.")
+        elif c.logged_in:
+            self.td_status.setText("✓ Coduri puse · conectat cu contul TIDAL (merg și playlisturile private).")
+        else:
+            self.td_status.setText("✓ Coduri puse (merg playlisturile publice). Pentru cele private: Conectează-te.")
+        self.td_logout.setEnabled(bool(c and c.logged_in))
+        self.spotify_changed.emit()
+
+    def _td_do_login(self):
+        for w, k in ((self.td_id, "tidal/client_id"), (self.td_secret, "tidal/client_secret")):
+            settings().setValue(k, w.text().strip())
+        c = tidal_client()
+        if c is None:
+            QMessageBox.information(self, "TIDAL", "Pune întâi Client ID și Client Secret.")
+            return
+        self.td_login.setEnabled(False)
+        self.td_status.setText("Aștept confirmarea în browser…")
+
+        def work(progress, cancelled):
+            c.login(webbrowser.open)
+            return True
+
+        self.td_task = Task(work, self)
+        self.td_task.succeeded.connect(lambda _: (self.td_login.setEnabled(True), self._td_refresh()))
+        self.td_task.failed.connect(lambda m: (self.td_login.setEnabled(True), self._td_refresh(),
+                                               QMessageBox.warning(self, "TIDAL", f"Conectarea nu a reușit:\n{m}")))
+        self.td_task.start()
 
     # ---------- Biblioteca ----------
     def _library_box(self):
