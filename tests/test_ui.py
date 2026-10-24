@@ -259,7 +259,7 @@ def test_main_window_smoke(app, tmp_path):
     dt.store.save()
     dt.notfound.reload()
     assert len(dt.notfound.rows) == 1 or len(dt.notfound.rows) == 2
-    assert "Negăsite" in dt.inner.tabText(1)
+    assert "Negăsite" in dt.inner.tabText(dt.inner.indexOf(dt.notfound))
     dt.notfound.table.selectRow(0)
     dt.notfound._remove_selected(ignore=False)
     assert "2" not in pp.current.not_found and "2" in pp.current.seen
