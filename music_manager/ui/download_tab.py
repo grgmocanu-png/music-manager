@@ -1959,7 +1959,7 @@ class DownloadTab(QWidget):
         self.playlists.refresh_buttons()
 
     def update_notfound_title(self, n):
-        if hasattr(self, "inner"):
+        if hasattr(self, "inner") and hasattr(self, "notfound"):
             self.inner.setTabText(self.inner.indexOf(self.notfound), f"Negăsite ({n})" if n else "Negăsite")
 
     def _refresh_current_playlist_rows(self):
