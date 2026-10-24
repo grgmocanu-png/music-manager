@@ -609,3 +609,34 @@ def test_v095_export_family_menus(app, tmp_path, monkeypatch):
         time.sleep(0.05)
     win.close()
     app.processEvents()
+
+
+def test_v096_all_playlists(app, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    from music_manager.core.sources import SavedPlaylist, track_to_dict
+    from music_manager.core.spotify import SpotifyTrack
+    from music_manager.ui.download_tab import DownloadTab, HAVE, MISSING, NOTFOUND
+    from music_manager.ui.common import AppState
+    tab = DownloadTab(AppState.instance or AppState())
+    a = SpotifyTrack(id="a", title="Glue", artists=["Bicep"], duration=200)
+    b = SpotifyTrack(id="b", title="Atlas", artists=["Bicep"], duration=210)
+    c = SpotifyTrack(id="c", title="Strobe", artists=["deadmau5"], duration=600)
+    p1 = SavedPlaylist(id="p1", name="Unu", url="u1", source="spotify")
+    p1.last_rows = [{"t": track_to_dict(a), "s": MISSING}, {"t": track_to_dict(b), "s": HAVE, "p": "x.mp3"}]
+    p2 = SavedPlaylist(id="p2", name="Doi", url="u2", source="youtube")
+    p2.last_rows = [{"t": track_to_dict(a), "s": MISSING}, {"t": track_to_dict(c), "s": NOTFOUND}]
+    p2.not_found = {"c": {"reason": "nimic"}}
+    tab.store.items[:] = [p1, p2]
+    tab.all.reload(auto_check=True)
+    allp = tab.all
+    assert len(allp.rows) == 3                                     # „Glue” o singură dată
+    i = next(k for k, r in enumerate(allp.rows) if r.track.id == "a")
+    assert sorted(allp.pls[i]) == ["p1", "p2"] and "Unu" in allp._names(i)
+    assert allp._checked_rows() == [i]                              # doar ce lipsește, bifat
+    allp.filter.setCurrentText("Negăsite")
+    assert sum(not allp.table.isRowHidden(k) for k in range(len(allp.rows))) == 1
+    assert tab.inner.tabText(tab.inner.indexOf(allp)) == "Toate playlisturile"
+    from music_manager.ui import power
+    power.keep_awake(True)
+    power.keep_awake(False)

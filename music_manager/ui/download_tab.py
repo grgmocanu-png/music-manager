@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from PySide6.QtCore import QDate, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
+    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
     QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSplitter,
     QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout, QWidget,
@@ -1012,6 +1012,384 @@ class PlaylistsPanel(TrackTableBase):
 
 
 # --------------------------------------------------------------------------
+C_PL = 8
+_RANK = {HAVE: 0, DONE: 0, NEAR: 1, MISSING: 2, OLD: 3, NOTFOUND: 4, FAILED: 4, DELETED: 5, IGNORED: 6}
+
+
+class AllPlaylistsPanel(TrackTableBase):
+    """Toate piesele din toate playlisturile, într-un singur tabel (fără dubluri), cu același „Arată:”.
+    De aici descarci din toate odată — și peste noapte (calculatorul rămâne treaz; opțional se oprește la final)."""
+    changed = Signal()
+
+    def __init__(self, tab, parent=None):
+        super().__init__(parent)
+        self.tab, self.store, self.runner = tab, tab.store, tab.runner
+        self.rows: list[Row] = []
+        self.pls: list[list[str]] = []          # pentru fiecare rând: playlisturile în care e piesa
+        self._filling = False
+        self._dl_idx: list[int] = []
+        self._waiting_verify = False
+        self.title = QLabel("<b style='font-size:14px'>Toate playlisturile</b>")
+        self.filter = QComboBox()
+        self.filter.addItems(FILTERS.keys())
+        self.filter.setCurrentText("Toate cele care lipsesc")
+        self.filter.currentIndexChanged.connect(self.apply_filter)
+        b_reload = QPushButton("↻")
+        b_reload.setToolTip("Reîncarcă din ultimele verificări ale playlisturilor")
+        b_reload.clicked.connect(lambda: self.reload(auto_check=True))
+        head = QHBoxLayout()
+        head.addWidget(self.title, 1)
+        head.addWidget(QLabel("Arată:"))
+        head.addWidget(self.filter)
+        head.addWidget(b_reload)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        self.table = self._make_table(["", "Artist", "Titlu", "Durată", "Stare", "Caută artist", "Caută titlu",
+                                       "Fișier / detalii", "Playlist"])
+        add_space_toggle(self.table, C_CHECK)
+        for c, w in ((C_CHECK, 28), (C_ARTIST, 170), (C_TITLE, 230), (C_DUR, 55), (C_STATUS, 190),
+                     (C_QA, 140), (C_QT, 180), (C_FILE, 200)):
+            self.table.setColumnWidth(c, w)
+        self.table.itemChanged.connect(self._item_changed)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
+        b_all, b_none = QPushButton("Bifează ce e afișat"), QPushButton("Debifează tot")
+        b_all.clicked.connect(lambda: self._set_checks(True))
+        b_none.clicked.connect(lambda: self._set_checks(False))
+        self.c_verify = QCheckBox("Verifică toate playlisturile înainte")
+        self.c_verify.setToolTip("Întâi verifică fiecare playlist (ce e nou), apoi descarcă tot ce lipsește.")
+        self.c_verify.toggled.connect(lambda *_: self._update_actions())
+        self.c_shutdown = QCheckBox("Oprește calculatorul când termină")
+        self.c_shutdown.setToolTip("La final: numărătoare de 60 de secunde, cu „Anulează”.")
+        self.b_download = QPushButton("Descarcă bifatele")
+        self.b_download.setMinimumHeight(34)
+        self.b_download.setObjectName("primary")
+        self.b_download.clicked.connect(self.download)
+        actions = QHBoxLayout()
+        actions.addWidget(b_all)
+        actions.addWidget(b_none)
+        actions.addStretch()
+        actions.addWidget(self.c_verify)
+        actions.addWidget(self.c_shutdown)
+        actions.addWidget(self.b_download)
+        hint = QLabel("O piesă care e în mai multe playlisturi apare o singură dată și se descarcă o singură dată "
+                      "(intră la toate playlisturile ei). Cât descarcă, calculatorul nu intră în sleep.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray;")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addLayout(head)
+        lay.addWidget(self.summary)
+        lay.addWidget(self.table, 1)
+        lay.addWidget(hint)
+        lay.addLayout(actions)
+        self.runner.event.connect(self._on_event)
+        self.runner.finished.connect(self._on_download_done)
+        self.runner.error.connect(self._on_download_error)
+        self.reload(auto_check=True)
+
+    # --- date ---------------------------------------------------------------------
+    @staticmethod
+    def _key(t) -> str:
+        return t.id or f"{t.main_artist}|{t.title}".lower()
+
+    def reload(self, auto_check=False):
+        if self.runner.busy() and self.runner.owner is self:
+            return
+        by: dict[str, int] = {}
+        rows, pls = [], []
+        for p in self.store.items:
+            for d in p.last_rows or []:
+                try:
+                    t = track_from_dict(d["t"])
+                except (KeyError, TypeError):
+                    continue
+                st = d.get("s", MISSING)
+                if t.id in p.ignored:
+                    st = IGNORED
+                elif st in (NOTFOUND, FAILED) and t.id not in p.not_found:
+                    st = HAVE if t.id in p.seen else MISSING
+                elif st == DONE:
+                    st = HAVE
+                k = self._key(t)
+                if k in by:
+                    i = by[k]
+                    if p.id not in pls[i]:
+                        pls[i].append(p.id)
+                    if _RANK.get(st, 9) < _RANK.get(rows[i].status, 9):     # „o ai” într-unul = o ai
+                        rows[i] = Row(t, st, d.get("p", ""), d.get("a", ""), d.get("q", ""), d.get("d", ""), p.id)
+                    continue
+                by[k] = len(rows)
+                rows.append(Row(t, st, d.get("p", ""), d.get("a", ""), d.get("q", ""), d.get("d", ""), p.id))
+                pls.append([p.id])
+        self.rows, self.pls = rows, pls
+        self.fill_table(auto_check)
+        self._show_summary()
+
+    def _show_summary(self):
+        miss = sum(1 for r in self.rows if r.status in (MISSING, OLD))
+        nf = sum(1 for r in self.rows if r.status in (NOTFOUND, FAILED))
+        near = sum(1 for r in self.rows if r.status == NEAR)
+        text = (f"{len(self.rows)} piese din {len(self.store.items)} playlisturi · "
+                f"<b style='color:#e67e22'>{miss}</b> lipsă · {near} aproape găsite · {nf} negăsite.")
+        try:
+            last = json.loads(settings().value("download/last_all", "") or "{}")
+        except ValueError:
+            last = {}
+        if last:
+            text += (f"<br><span style='color:gray'>Ultima descărcare din toate ({last.get('when', '')[:16].replace('T', ' ')}): "
+                     f"{last.get('done', 0)} descărcate · {last.get('failed', 0)} negăsite · "
+                     f"{last.get('near', 0)} de confirmat.</span>")
+        self.summary.setText(text)
+
+    def _names(self, i) -> str:
+        return ", ".join((self.store.get(pid).name if self.store.get(pid) else pid) for pid in self.pls[i])
+
+    def fill_table(self, auto_check=False):
+        prev = {}
+        if not auto_check:
+            for i in range(min(self.table.rowCount(), len(self.rows))):
+                it = self.table.item(i, C_CHECK)
+                prev[i] = bool(it and it.checkState() == Qt.Checked)
+        self._filling = True
+        self.table.setUpdatesEnabled(False)
+        self.table.setRowCount(len(self.rows))
+        for i, r in enumerate(self.rows):
+            chk = QTableWidgetItem()
+            if r.status in DOWNLOADABLE:
+                chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                on = (r.status in (MISSING, OLD)) if auto_check else prev.get(i, False)
+                chk.setCheckState(Qt.Checked if on else Qt.Unchecked)
+            else:
+                chk.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.table.setItem(i, C_CHECK, chk)
+            self._fill_row(i)
+        self.table.setUpdatesEnabled(True)
+        self._filling = False
+        self.apply_filter()
+        self._update_actions()
+
+    def _fill_row(self, i):
+        r = self.rows[i]
+        was = self._filling
+        self._filling = True
+        label, color = STATUS_LABEL[r.status]
+        self.table.setItem(i, C_ARTIST, _cell(r.track.artist))
+        self.table.setItem(i, C_TITLE, _cell(r.track.title, tooltip=r.track.album))
+        self.table.setItem(i, C_DUR, _cell(fmt_duration(r.track.duration)))
+        self.table.setItem(i, C_STATUS, _cell(label, color=color))
+        editable = r.status in DOWNLOADABLE
+        self.table.setItem(i, C_QA, _cell(r.artist_q, editable, tooltip="Dublu-click pentru a modifica"))
+        self.table.setItem(i, C_QT, _cell(r.title_q, editable, tooltip="Dublu-click pentru a modifica"))
+        detail = os.path.basename(r.path) if r.path else r.detail
+        self.table.setItem(i, C_FILE, _cell(detail, tooltip=r.path or r.detail))
+        names = self._names(i)
+        self.table.setItem(i, C_PL, _cell(names, tooltip=names))
+        chk = self.table.item(i, C_CHECK)
+        if r.status not in DOWNLOADABLE and chk and chk.flags() & Qt.ItemIsUserCheckable:
+            chk.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            chk.setData(Qt.CheckStateRole, None)
+        self._filling = was
+
+    def apply_filter(self):
+        allowed = FILTERS[self.filter.currentText()]
+        for i, r in enumerate(self.rows):
+            self.table.setRowHidden(i, allowed is not None and r.status not in allowed)
+
+    def _item_changed(self, item):
+        if self._filling:
+            return
+        i, c = item.row(), item.column()
+        if i >= len(self.rows):
+            return
+        r = self.rows[i]
+        if c in (C_QA, C_QT):
+            if c == C_QA:
+                r.artist_q = item.text().strip()
+            else:
+                r.title_q = item.text().strip()
+            for pid in self.pls[i]:
+                p = self.store.get(pid)
+                if p is None:
+                    continue
+                if (r.artist_q, r.title_q) != search_query(r.track):
+                    p.custom_queries[r.track.id] = [r.artist_q, r.title_q]
+                else:
+                    p.custom_queries.pop(r.track.id, None)
+            self.store.save()
+        self._update_actions()
+
+    def _context_menu(self, pos):
+        i = self.table.rowAt(pos.y())
+        if i < 0 or i >= len(self.rows):
+            return
+        r = self.rows[i]
+        m = QMenu(self)
+        for site in SEARCH_SITES:
+            m.addAction(f"Caută pe {site}", lambda s=site: open_search(s, r.track))
+        m.addAction("Copiază „Artist - Titlu”",
+                    lambda: QGuiApplication.clipboard().setText(f"{r.track.artist} - {r.track.title}"))
+        if r.path:
+            m.addAction(reveal_label(), lambda: reveal_in_folder(r.path))
+        m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _checked_rows(self) -> list[int]:
+        return [i for i, r in enumerate(self.rows) if r.status in DOWNLOADABLE and self.table.item(i, C_CHECK)
+                and self.table.item(i, C_CHECK).checkState() == Qt.Checked]
+
+    def _set_checks(self, on: bool):
+        self._filling = True
+        for i, r in enumerate(self.rows):
+            it = self.table.item(i, C_CHECK)
+            if r.status in DOWNLOADABLE and it and not self.table.isRowHidden(i):
+                it.setCheckState(Qt.Checked if on else Qt.Unchecked)
+        self._filling = False
+        self._update_actions()
+
+    def _update_actions(self):
+        if self.runner.busy() and self.runner.owner is self:
+            return
+        n = len(self._checked_rows())
+        self.b_download.setText(f"Descarcă bifatele ({n})" if not self.c_verify.isChecked()
+                                else "Verifică toate, apoi descarcă ce lipsește")
+        self.b_download.setEnabled((n > 0 or self.c_verify.isChecked()) and not self.runner.busy())
+
+    # --- descărcare ---------------------------------------------------------------
+    def download(self):
+        if self.c_verify.isChecked() and not self._waiting_verify:
+            from .power import keep_awake
+            keep_awake(True)
+            self._waiting_verify = True
+            self.b_download.setEnabled(False)
+            self.b_download.setText("Verific playlisturile…")
+            self.tab.playlists.verify_all()
+            QTimer.singleShot(1500, self._after_verify)
+            return
+        idx = self._checked_rows()
+        if not idx:
+            from .power import keep_awake
+            keep_awake(False)
+            return
+        items = []
+        any_yt = False
+        for i in idx:
+            r = self.rows[i]
+            p = self.store.get(self.pls[i][0])
+            any_yt |= bool(p and p.source == "youtube")
+            items.append(slsk.DownloadItem(r.track, r.artist_q, r.title_q, playlist_dir(p)))
+        if not self.runner.start(self, items, length_tol=20 if any_yt else 5):
+            return
+        from .power import keep_awake
+        keep_awake(True)
+        self._dl_idx = idx
+        now = datetime.now().isoformat(timespec="minutes")
+        for pid in {pid for i in idx for pid in self.pls[i]}:
+            p = self.store.get(pid)
+            if p:
+                p.baseline = now
+        self.store.save()
+        for i in idx:
+            self.rows[i].status = QUEUED
+            self._fill_row(i)
+        self.b_download.setEnabled(False)
+
+    def _after_verify(self):
+        pp = self.tab.playlists
+        busy = bool(getattr(pp, "_verify_queue", None)) or (pp.task and pp.task.isRunning()) or self.runner.busy()
+        if busy:
+            QTimer.singleShot(1500, self._after_verify)
+            return
+        self._waiting_verify = False
+        self.reload(auto_check=True)
+        if self._checked_rows():
+            self.download()
+        else:
+            from .power import keep_awake
+            keep_awake(False)
+            self._finish_night(0, 0, 0)
+
+    def _on_event(self, ev, done, total):
+        if self.runner.owner is not self or ev.kind == "log" or not (0 <= ev.index < len(self._dl_idx)):
+            return
+        i = self._dl_idx[ev.index]
+        if i >= len(self.rows):
+            return
+        r = self.rows[i]
+        if ev.kind == "searching":
+            r.status, r.detail = SEARCHING, ""
+        elif ev.kind == "downloading":
+            r.status, r.detail = DOWNLOADING, ev.text
+        elif ev.kind == "progress":
+            r.status, r.detail = DOWNLOADING, f"{ev.percent:.0f}%"
+        elif ev.kind == "done":
+            r.status, r.path, r.detail = DONE, ev.path, ev.text
+        elif ev.kind == "failed":
+            r.status, r.detail = FAILED, ev.text
+        self._fill_row(i)
+
+    def _on_download_done(self, summary):
+        if self.runner.owner is not self:
+            return
+        from .power import keep_awake
+        keep_awake(False)
+        now = datetime.now().isoformat(timespec="minutes")
+        n_done = n_failed = 0
+        for i in self._dl_idx:
+            if i >= len(self.rows):
+                continue
+            r = self.rows[i]
+            if r.status in ACTIVE:
+                r.status = MISSING
+                r.detail = "oprită" if summary and summary.cancelled else ""
+            n_done += r.status == DONE
+            n_failed += r.status == FAILED
+            for pid in self.pls[i]:
+                p = self.store.get(pid)
+                if p is None:
+                    continue
+                if r.status == DONE:
+                    p.link(r.track.id, r.path)
+                    p.last_downloaded += 1
+                elif r.status == FAILED:
+                    p.not_found[r.track.id] = {"reason": r.detail, "code": "", "date": now,
+                                               "track": track_to_dict(r.track), "query": [r.artist_q, r.title_q]}
+                for d in p.last_rows or []:          # și lista playlistului află rezultatul
+                    if (d.get("t") or {}).get("id") == r.track.id:
+                        if r.status == DONE:
+                            d["s"], d["p"], d["d"] = HAVE, r.path, r.detail
+                        elif r.status == FAILED:
+                            d["s"], d["d"] = NOTFOUND, r.detail
+        for p in self.store.items:
+            p.last_missing = sum(1 for d in (p.last_rows or []) if d.get("s") == MISSING)
+        self.store.save()
+        near = sum(1 for r in self.rows if r.status == NEAR)
+        self.fill_table()
+        self.changed.emit()
+        self._finish_night(n_done, n_failed, near, cancelled=bool(summary and summary.cancelled))
+
+    def _finish_night(self, done, failed, near, cancelled=False):
+        settings().setValue("download/last_all", json.dumps({"when": datetime.now().isoformat(timespec="minutes"),
+                                                             "done": done, "failed": failed, "near": near}))
+        self._show_summary()
+        if self.c_shutdown.isChecked() and not cancelled:
+            from .power import ShutdownCountdown, shutdown_now
+            text = f"Descărcate: {done} · negăsite: {failed} · de confirmat: {near}."
+            if ShutdownCountdown(text, 60, self).exec() == QDialog.Accepted:
+                self.store.save()
+                shutdown_now()
+
+    def _on_download_error(self, msg):
+        if self.runner.owner is not self:
+            return
+        from .power import keep_awake
+        keep_awake(False)
+        for i in self._dl_idx:
+            if i < len(self.rows) and self.rows[i].status in ACTIVE:
+                self.rows[i].status = MISSING
+        self.fill_table()
+
+
+# --------------------------------------------------------------------------
 class RemovedPanel(TrackTableBase):
     """Piesele pe care le-ai scos din playlisturile online (Spotify / YouTube) și care au fișier la tine."""
 
@@ -1511,11 +1889,18 @@ class DownloadTab(QWidget):
         self.playlists = PlaylistsPanel(self)
         self.notfound = NotFoundPanel(self)
         self.removed = RemovedPanel(self)
+        self.all = AllPlaylistsPanel(self)
         self.inner.addTab(self.playlists, "Playlisturi")
+        self.inner.addTab(self.all, "Toate playlisturile")
         self.inner.addTab(self.notfound, "Negăsite")
         self.inner.addTab(self.removed, "Scoase din playlist")
         self.playlists.changed.connect(self.removed.reload)
         self.playlists.changed.connect(self.notfound.reload)
+        self.playlists.changed.connect(lambda: self.all.reload(auto_check=True))
+        self.all.changed.connect(self.notfound.reload)
+        self.all.changed.connect(self.playlists.refresh_buttons)
+        self.inner.currentChanged.connect(lambda i: self.all.reload(auto_check=True)
+                                          if self.inner.widget(i) is self.all else None)
         self.notfound.changed.connect(self.playlists.refresh_buttons)
         self.notfound.changed.connect(self._refresh_current_playlist_rows)
 
@@ -1575,7 +1960,7 @@ class DownloadTab(QWidget):
 
     def update_notfound_title(self, n):
         if hasattr(self, "inner"):
-            self.inner.setTabText(1, f"Negăsite ({n})" if n else "Negăsite")
+            self.inner.setTabText(self.inner.indexOf(self.notfound), f"Negăsite ({n})" if n else "Negăsite")
 
     def _refresh_current_playlist_rows(self):
         p = self.playlists
@@ -1652,9 +2037,11 @@ class DownloadTab(QWidget):
         self.status.setText(msg)
         self.log.appendPlainText("— " + msg + " —")
         self.playlists._update_actions()
+        self.all._update_actions()
 
     def _dl_error(self, msg):
         self.set_idle()
         self.log.appendPlainText("✗ " + msg)
         QMessageBox.warning(self, "Soulseek", msg)
         self.playlists._update_actions()
+        self.all._update_actions()
