@@ -1,5 +1,10 @@
 import multiprocessing
+import os
 import sys
+
+# numpy: câte un singur fir de calcul pe proces (analiza rulează deja în mai multe procese)
+for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
 
 if __name__ == "__main__":
     # analiza grea (mixabilitate) rulează în procese separate; în aplicația împachetată

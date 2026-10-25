@@ -365,27 +365,57 @@ def analyze_samples(x: np.ndarray, sr: int = an.SR, bpm: float = 0.0, key: str =
 
 
 def analyze(path: str, cache_dir: str, analysis_dir: str, force: bool = False,
-            ref_bpm: float = 0.0) -> tuple[MixInfo, object]:
+            ref_bpm: float = 0.0, log=None) -> tuple[MixInfo, object]:
     """Mixabilitatea unei piese (cu cache). Face și analiza de bază (BPM, cheie, waveform) dacă lipsește,
-    decodând fișierul o singură dată. Întoarce (MixInfo, Analysis)."""
+    decodând fișierul o singură dată. Întoarce (MixInfo, Analysis). log(etapă) e apelat la fiecare pas."""
+    log = log or (lambda *_a: None)
     if not force:
         m = load_cached(path, cache_dir)
         if m is not None:
+            log("deja în cache")
             return m, an.load_cached(path, analysis_dir)
     base = None if force else an.load_cached(path, analysis_dir)
     try:
-        x = an.decode(path)
+        log("citesc fișierul (ffmpeg)")
+        x = an.decode(path, timeout=DECODE_TIMEOUT)
+        log(f"citit: {len(x) / an.SR:.0f} s de audio")
         if base is None or base.error:
             base = an.analyze_samples(x)
             an.save_cached(path, analysis_dir, base)
+            log(f"BPM/Key: {base.bpm} {base.key}")
         # BPM-ul de referință: cel din Bibliotecă (Traktor / Rekordbox / pus de tine), altfel din analiză
         m = analyze_samples(x, an.SR, ref_bpm or base.bpm, base.key, base.energy, base.drops,
                             os.path.basename(path))
+        log(f"mixabilitate: {m.score}")
     except Exception as e:  # noqa: BLE001
         from datetime import datetime
         m = MixInfo(error=str(e) or e.__class__.__name__, analyzed_at=datetime.now().isoformat(timespec="minutes"))
+        log(f"eroare: {m.error}")
     save_cached(path, cache_dir, m)
     return m, base
+
+
+DECODE_TIMEOUT = 180     # o piesă care nu se poate citi în 3 minute e sărită (disc care nu răspunde, fișier din cloud)
+
+
+def log_path(cache_dir: str) -> str:
+    return os.path.join(os.path.dirname(cache_dir), "analiza.log")
+
+
+def _logger(cache_dir: str, path: str):
+    """Jurnalul analizei: o linie la fiecare etapă, ca să se vadă unde se pierde timpul."""
+    import time
+    t0 = time.time()
+    lp = log_path(cache_dir)
+
+    def log(step):
+        try:
+            with open(lp, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%H:%M:%S')} +{time.time() - t0:6.1f}s  [proces {os.getpid()}]  "
+                        f"{os.path.basename(path)}: {step}\n")
+        except OSError:
+            pass
+    return log
 
 
 def name_is_vocal(text: str) -> bool:
@@ -410,8 +440,28 @@ def analyze_to_cache(path: str, cache_dir: str, analysis_dir: str, force: bool =
                      ref_bpm: float = 0.0) -> str:
     """Pentru procesele de analiză: rezultatul rămâne în cache, întoarce doar calea."""
     if os.path.exists(path):
-        analyze(path, cache_dir, analysis_dir, force=force, ref_bpm=ref_bpm)
+        analyze(path, cache_dir, analysis_dir, force=force, ref_bpm=ref_bpm, log=_logger(cache_dir, path))
     return path
+
+
+LAST_POOL_ERROR = ""
+
+
+def _start_log(cache_dir: str, total: int, workers) -> None:
+    import platform
+    import time
+    lp = log_path(cache_dir)
+    try:
+        os.makedirs(os.path.dirname(lp), exist_ok=True)
+        if os.path.exists(lp) and os.path.getsize(lp) > 2_000_000:      # păstrăm jurnalul mic
+            os.replace(lp, lp + ".vechi")
+        from .. import __version__
+        with open(lp, "a", encoding="utf-8") as f:
+            f.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')}  Music Manager {__version__}  {total} piese  "
+                    f"{workers} procese  {platform.platform()}  {os.cpu_count()} nuclee  "
+                    f"{'aplicație' if getattr(sys, 'frozen', False) else 'sursă'}\n")
+    except OSError:
+        pass
 
 
 def analyze_many(items, cache_dir: str, analysis_dir: str, force: bool = False,
@@ -424,8 +474,9 @@ def analyze_many(items, cache_dir: str, analysis_dir: str, force: bool = False,
     cancelled = cancelled or (lambda: False)
     done: set[str] = set()
     n = 0
+    _start_log(cache_dir, total, workers)
     if workers is None:
-        workers = max(1, min(2, (os.cpu_count() or 2) - 1))
+        workers = max(1, min(4, (os.cpu_count() or 2) - 1))
     if total >= 1 and workers > 0:
         try:
             import multiprocessing as mp
@@ -448,8 +499,10 @@ def analyze_many(items, cache_dir: str, analysis_dir: str, force: bool = False,
                         progress(n, total, p)
             finally:
                 ex.shutdown(wait=not cancelled(), cancel_futures=True)
-        except Exception:  # noqa: BLE001 — procesele n-au mers: continuăm în acest fir
-            pass
+        except Exception as e:  # noqa: BLE001 — procesele n-au mers: continuăm în acest fir
+            global LAST_POOL_ERROR
+            LAST_POOL_ERROR = f"{e.__class__.__name__}: {e}"
+            _logger(cache_dir, "-")(f"procesele separate n-au mers ({LAST_POOL_ERROR}); continui în aplicație")
     for p, b in items:
         if cancelled():
             break

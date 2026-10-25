@@ -52,7 +52,8 @@ class Analysis:
 
 
 # --- decodare --------------------------------------------------------------
-def decode(path: str, ffmpeg: str | None = None, sr: int = SR, max_seconds: float = 0) -> np.ndarray:
+def decode(path: str, ffmpeg: str | None = None, sr: int = SR, max_seconds: float = 0,
+           timeout: float | None = None) -> np.ndarray:
     if ffmpeg is None:
         from .convert import ffmpeg_path
         ffmpeg = ffmpeg_path()
@@ -63,7 +64,11 @@ def decode(path: str, ffmpeg: str | None = None, sr: int = SR, max_seconds: floa
         cmd += ["-t", str(max_seconds)]
     cmd += ["-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"]
     kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, **kwargs)
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                           timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"fișierul nu s-a putut citi în {int(timeout)} s (discul sau fișierul nu răspunde)")
     if p.returncode != 0 and not p.stdout:
         raise RuntimeError("Nu pot decoda fișierul: " + p.stderr.decode("utf-8", "ignore").strip()[-200:])
     return np.frombuffer(p.stdout, dtype=np.float32).copy()

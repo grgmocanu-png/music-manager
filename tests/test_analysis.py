@@ -82,3 +82,22 @@ def test_analyze_many_in_processes(tmp_path):
     assert mx.analyze_many([(p, 0.0) for p in paths], md, ad, force=True, workers=0,
                            progress=lambda i, t, p: seen.append(p)) == 2
     assert mx.analyze_many([(p, 0.0) for p in paths], md, ad, cancelled=lambda: True, workers=0) == 0
+
+
+def test_analysis_log_and_timeout(tmp_path):
+    """v0.9.9: jurnal pe etape; fișier care nu se citește → eroare, nu blocare."""
+    from music_manager.core import mixability as mx
+    p = str(tmp_path / "a.wav")
+    make(p, bpm=124, key_notes=(57, 60, 64), bass_root=45, dur=20, brk=(8, 12))
+    md, ad = str(tmp_path / "d" / "mix"), str(tmp_path / "d" / "an")
+    assert mx.analyze_many([(p, 0.0)], md, ad, workers=0) == 1
+    text = open(mx.log_path(md), encoding="utf-8").read()
+    assert "citesc fișierul" in text and "mixabilitate:" in text and "1 piese" in text
+    if sys.platform != "win32":
+        import stat
+        import pytest
+        f = tmp_path / "slow.sh"                 # un „ffmpeg” care nu răspunde
+        f.write_text("#!/bin/sh\nexec sleep 30\n")
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+        with pytest.raises(RuntimeError):
+            an.decode(p, ffmpeg=str(f), timeout=0.5)

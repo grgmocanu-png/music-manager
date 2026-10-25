@@ -902,7 +902,9 @@ class ExploreView(QWidget):
 
     def analyze_rows(self, todo, force=False):
         from .jobs import Job
-        paths = [r.path for r in todo]
+        paths = [r.path for r in todo if r and r.path]
+        if not paths:
+            return
         refs = {r.path: float(r.bpm or 0) for r in todo}      # BPM-ul din Bibliotecă (Traktor / Rekordbox / al tău)
         md, ad = mix_dir(), analysis_dir()
 
@@ -911,8 +913,7 @@ class ExploreView(QWidget):
             return mx.analyze_many([(p, refs.get(p, 0.0)) for p in paths], md, ad, force=force,
                                    progress=progress, cancelled=cancelled)
 
-        # cât rulează analiza, tabelul nu se reordonează la fiecare piesă; se actualizează în tranșe
-        self.proxy.setDynamicSortFilter(False)
+        # tabelul se actualizează în tranșe (o dată la 0,7 s), nu după fiecare piesă
         self._pending_mix = getattr(self, "_pending_mix", set())
         job = Job(f"Analiză mixabilitate ({len(paths)})", work, writes=False)
         job.progress.connect(self._analyzed_one)
@@ -935,25 +936,21 @@ class ExploreView(QWidget):
         if not paths:
             return
         md = mix_dir()
-        lo, hi = None, None
+        last = len(COLS) - 1
         for i, r in enumerate(self.model.rows):
             if r.path in paths:
                 m = mx.load_cached(r.path, md)
                 r.mix = m
-                lo = i if lo is None else lo
-                hi = i
+                # rând cu rând: tabelul mută doar piesele schimbate, nu se reordonează tot
+                self.model.dataChanged.emit(self.model.index(i, 0), self.model.index(i, last))
                 if r.path == self.player.path and m:
                     self.player.wave.set_segment(m.seg_start, m.seg_end)
-        if lo is not None:
-            self.model.dataChanged.emit(self.model.index(lo, 0), self.model.index(hi, len(COLS) - 1))
         n = sum(1 for r in self.model.rows if r.mix is not None)
         self.count.setText(f"{len(self.model.rows)} piese · {n} analizate")
 
     def _analysis_done(self, text):
         self._flush_mix()
         self.status.setText(text)
-        self.proxy.setDynamicSortFilter(True)
-        self.proxy.invalidate()
 
     # ===== player =====
     def _row_at(self, proxy_index) -> Row | None:
@@ -1093,6 +1090,7 @@ class ExploreView(QWidget):
         m.addAction("Bifează / debifează (X)", self.toggle_checks)
         m.addSeparator()
         m.addAction("Analizează mixabilitatea", lambda: self.analyze_rows([r for r in sel if r.path], force=True))
+        m.addAction("Arată jurnalul analizei", lambda: reveal_in_folder(mx.log_path(mix_dir())))
         rm = m.addMenu("Rating")
         for n in range(5, -1, -1):
             rm.addAction(("★" * n) if n else "Fără rating (0)", lambda n=n: self.set_rating(sel, n))
