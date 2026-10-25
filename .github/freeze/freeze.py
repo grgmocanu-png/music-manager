@@ -4,7 +4,7 @@ repo, n_rows, n_real = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 sys.path.insert(0, repo); sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 if __name__ == "__main__":
-    from PySide6.QtCore import QCoreApplication, QStandardPaths, QTimer
+    from PySide6.QtCore import QCoreApplication, QStandardPaths, QTimer, Qt
     from PySide6.QtWidgets import QApplication, QMessageBox
     QStandardPaths.setTestModeEnabled(True)
     QCoreApplication.setOrganizationName("MMFreeze"); QCoreApplication.setApplicationName("MMFreeze" + str(os.getpid()))
@@ -28,7 +28,7 @@ if __name__ == "__main__":
                                   bpm=str(120 + i % 10)), family="House", bpm=120.0 + i % 10, key="8A",
                             missing=i >= n_real))
     ex.model.set_rows(rows)
-    ex.table.sortByColumn(next(i for i, c in enumerate(exm.COLS) if c[1] == "mix"), 1)
+    ex.table.sortByColumn(next(i for i, c in enumerate(exm.COLS) if c[1] == "mix"), Qt.DescendingOrder)
     app.processEvents()
     import threading, traceback, collections
     timing = collections.defaultdict(list)
