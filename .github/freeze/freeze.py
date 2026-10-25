@@ -71,4 +71,5 @@ if __name__ == "__main__":
     for k, c in stacks.most_common(6): print("STACK", c, k)
     print(json.dumps({"total_s": round(dur, 1), "max_gap_ms": round(max(gaps)*1000), "top5_ms": [round(g*1000) for g in big],
                       "gaps_over_250ms": sum(g > 0.25 for g in gaps), "frozen_s": round(sum(g for g in gaps if g > 0.25), 1)}))
+    sys.stdout.flush(); sys.stderr.flush()
     os._exit(0)
