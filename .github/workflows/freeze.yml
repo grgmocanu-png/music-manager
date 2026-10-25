@@ -32,7 +32,7 @@ jobs:
       - name: Diagnostic old
         if: always()
         shell: pwsh
-        env: { QT_QPA_PLATFORM: offscreen, MM_DIAG_PAD: "3000" }
+        env: { QT_QPA_PLATFORM: offscreen, MM_DIAG_PAD: "3000", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" }
         run: |
           $env:MM_DIAG_ANALYZE = "$env:RUNNER_TEMP\piese"
           Remove-Item -Recurse -Force "$env:APPDATA\MusicManager" -ErrorAction SilentlyContinue
@@ -44,7 +44,7 @@ jobs:
       - name: Diagnostic new
         if: always()
         shell: pwsh
-        env: { QT_QPA_PLATFORM: offscreen, MM_DIAG_PAD: "3000" }
+        env: { QT_QPA_PLATFORM: offscreen, MM_DIAG_PAD: "3000", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" }
         run: |
           $env:MM_DIAG_ANALYZE = "$env:RUNNER_TEMP\piese"
           Remove-Item -Recurse -Force "$env:APPDATA\MusicManager" -ErrorAction SilentlyContinue
