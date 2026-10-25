@@ -90,6 +90,20 @@ def run(app, win, folder: str, out: str, limit_s: float = 240) -> int:
         rep["errors"] = [r.mix.error for r in rows if r.mix is not None and r.mix.error][:5]
         rep["cached"] = sum(1 for p in files if mx.load_cached(p, exm.mix_dir()) is not None)
         rep["status"] = ex.status.text()
+        # cât costă o reordonare completă a tabelului și unde se duce timpul
+        import cProfile
+        import io
+        import pstats
+        pr = cProfile.Profile()
+        t = time.perf_counter()
+        pr.enable()
+        ex.proxy.invalidate()
+        app.processEvents()
+        pr.disable()
+        rep["resort_s"] = round(time.perf_counter() - t, 2)
+        buf = io.StringIO()
+        pstats.Stats(pr, stream=buf).sort_stats("tottime").print_stats(12)
+        rep["profile"] = [ln.strip() for ln in buf.getvalue().splitlines() if ln.strip()][-14:]
     except Exception:  # noqa: BLE001
         rep["exception"] = traceback.format_exc()
     save()
