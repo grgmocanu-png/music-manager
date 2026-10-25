@@ -62,3 +62,23 @@ def test_mixability(tmp_path):
     q = mx.analyze_samples(pad, an.SR, name="Song (Acapella).wav")
     assert q.pulse < 20 and q.kind == "acapella" and q.score <= 3 and q.bpm == 0
     assert mx.name_is_vocal("Les Fleurs (acapella)") and not mx.name_is_vocal("Moody")
+
+
+def test_analyze_many_in_processes(tmp_path):
+    """v0.9.8: analiza din Explore rulează în procese separate (cu fir de rezervă)."""
+    from music_manager.core import mixability as mx
+    paths = []
+    for i, b in enumerate((122, 128)):
+        p = str(tmp_path / f"t{i}.wav")
+        make(p, bpm=b, key_notes=(57, 60, 64), bass_root=45, dur=30, brk=(10, 20))
+        paths.append(p)
+    md, ad = str(tmp_path / "mix"), str(tmp_path / "an")
+    seen = []
+    n = mx.analyze_many([(p, 0.0) for p in paths], md, ad, progress=lambda i, t, p: seen.append(p), workers=2)
+    assert n == 2 and sorted(seen) == sorted(paths)
+    assert all(mx.load_cached(p, md) is not None for p in paths)
+    # fără procese (workers=0) merge pe fir; anularea oprește tot
+    seen.clear()
+    assert mx.analyze_many([(p, 0.0) for p in paths], md, ad, force=True, workers=0,
+                           progress=lambda i, t, p: seen.append(p)) == 2
+    assert mx.analyze_many([(p, 0.0) for p in paths], md, ad, cancelled=lambda: True, workers=0) == 0

@@ -11,7 +11,7 @@ import json
 import os
 import shutil
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
@@ -93,7 +93,7 @@ SORT_LEVELS = [("Family", "family"), ("Genre", "genre"), ("Folosire", "use"),
 
 
 class Row:
-    __slots__ = ("track", "family", "bpm", "key", "mix", "checked", "missing", "rating")
+    __slots__ = ("track", "family", "bpm", "key", "mix", "checked", "missing", "rating", "_kp", "_k")
 
     def __init__(self, track, family="", bpm=0.0, key="", missing=False, rating=None):
         self.track, self.family, self.bpm, self.key = track, family, bpm, key
@@ -101,13 +101,19 @@ class Row:
         self.checked = False
         self.missing = missing
         self.rating = int(rating if rating is not None else (getattr(track, "rating", 0) or 0))
+        self._kp = self._k = ""
 
     @property
     def path(self):
         return self.track.path
 
     def manual(self) -> dict:
-        return manual().get(_norm(self.path), {}) if self.path else {}
+        p = self.path
+        if not p:
+            return {}
+        if p != self._kp:                     # cheia normalizată, calculată o singură dată
+            self._kp, self._k = p, _norm(p)
+        return manual().get(self._k, {})
 
     @property
     def score(self) -> int:
@@ -901,30 +907,53 @@ class ExploreView(QWidget):
         md, ad = mix_dir(), analysis_dir()
 
         def work(progress, cancelled):
-            for i, p in enumerate(paths):
-                if cancelled():
-                    break
-                if os.path.exists(p):
-                    mx.analyze(p, md, ad, force=force, ref_bpm=refs.get(p, 0.0))
-                progress(i + 1, len(paths), p)
-            return len(paths)
+            # analiza rulează în procese separate: interfața rămâne liberă cât se calculează
+            return mx.analyze_many([(p, refs.get(p, 0.0)) for p in paths], md, ad, force=force,
+                                   progress=progress, cancelled=cancelled)
 
+        # cât rulează analiza, tabelul nu se reordonează la fiecare piesă; se actualizează în tranșe
+        self.proxy.setDynamicSortFilter(False)
+        self._pending_mix = getattr(self, "_pending_mix", set())
         job = Job(f"Analiză mixabilitate ({len(paths)})", work, writes=False)
         job.progress.connect(self._analyzed_one)
-        job.succeeded.connect(lambda n: self.status.setText(f"Analiza s-a terminat ({n} piese)."))
+        job.succeeded.connect(lambda n: self._analysis_done(f"Analiza s-a terminat ({n} piese)."))
+        job.failed.connect(lambda e: self._analysis_done(f"Analiza s-a oprit: {e}"))
         job.start()
 
     def _analyzed_one(self, done, total, path):
-        m = mx.load_cached(path, mix_dir())
-        for r in self.model.rows:
-            if r.path == path:
-                r.mix = m
-        self.model.refresh(path)
+        self._pending_mix.add(path)
         self.status.setText(f"Analizez mixabilitatea… {done}/{total}")
+        if not hasattr(self, "_mix_timer"):
+            self._mix_timer = QTimer(self)
+            self._mix_timer.setSingleShot(True)
+            self._mix_timer.timeout.connect(self._flush_mix)
+        if not self._mix_timer.isActive():
+            self._mix_timer.start(700)
+
+    def _flush_mix(self):
+        paths, self._pending_mix = self._pending_mix, set()
+        if not paths:
+            return
+        md = mix_dir()
+        lo, hi = None, None
+        for i, r in enumerate(self.model.rows):
+            if r.path in paths:
+                m = mx.load_cached(r.path, md)
+                r.mix = m
+                lo = i if lo is None else lo
+                hi = i
+                if r.path == self.player.path and m:
+                    self.player.wave.set_segment(m.seg_start, m.seg_end)
+        if lo is not None:
+            self.model.dataChanged.emit(self.model.index(lo, 0), self.model.index(hi, len(COLS) - 1))
         n = sum(1 for r in self.model.rows if r.mix is not None)
         self.count.setText(f"{len(self.model.rows)} piese · {n} analizate")
-        if path == self.player.path and m:
-            self.player.wave.set_segment(m.seg_start, m.seg_end)
+
+    def _analysis_done(self, text):
+        self._flush_mix()
+        self.status.setText(text)
+        self.proxy.setDynamicSortFilter(True)
+        self.proxy.invalidate()
 
     # ===== player =====
     def _row_at(self, proxy_index) -> Row | None:

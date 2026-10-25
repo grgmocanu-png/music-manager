@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -390,3 +391,72 @@ def analyze(path: str, cache_dir: str, analysis_dir: str, force: bool = False,
 def name_is_vocal(text: str) -> bool:
     """Acapella / vocal după nume sau taguri (sigur și instant)."""
     return bool(ACAPELLA_WORDS.search(text or ""))
+
+
+# --- analiză în procese separate (interfața nu se mai blochează) -------------------------
+def _low_priority():
+    """Procesele de analiză au prioritate mică: calculatorul și aplicația rămân fluide."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x00004000)
+        else:
+            os.nice(10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def analyze_to_cache(path: str, cache_dir: str, analysis_dir: str, force: bool = False,
+                     ref_bpm: float = 0.0) -> str:
+    """Pentru procesele de analiză: rezultatul rămâne în cache, întoarce doar calea."""
+    if os.path.exists(path):
+        analyze(path, cache_dir, analysis_dir, force=force, ref_bpm=ref_bpm)
+    return path
+
+
+def analyze_many(items, cache_dir: str, analysis_dir: str, force: bool = False,
+                 progress=None, cancelled=None, workers: int | None = None) -> int:
+    """Analizează mai multe piese în procese separate (1-2), cu fir de rezervă dacă procesele nu pornesc.
+    items = [(cale, ref_bpm)]; progress(i, total, cale) după fiecare piesă."""
+    items = list(items)
+    total = len(items)
+    progress = progress or (lambda *a: None)
+    cancelled = cancelled or (lambda: False)
+    done: set[str] = set()
+    n = 0
+    if workers is None:
+        workers = max(1, min(2, (os.cpu_count() or 2) - 1))
+    if total >= 1 and workers > 0:
+        try:
+            import multiprocessing as mp
+            from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+            ex = ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"),
+                                     initializer=_low_priority)
+            try:
+                pending = {ex.submit(analyze_to_cache, p, cache_dir, analysis_dir, force, b): p for p, b in items}
+                while pending:
+                    if cancelled():
+                        for f in pending:
+                            f.cancel()
+                        break
+                    fin, _ = wait(list(pending), timeout=0.5, return_when=FIRST_COMPLETED)
+                    for f in fin:
+                        p = pending.pop(f)
+                        f.result()          # BrokenProcessPool → trecem pe fir
+                        done.add(p)
+                        n += 1
+                        progress(n, total, p)
+            finally:
+                ex.shutdown(wait=not cancelled(), cancel_futures=True)
+        except Exception:  # noqa: BLE001 — procesele n-au mers: continuăm în acest fir
+            pass
+    for p, b in items:
+        if cancelled():
+            break
+        if p in done:
+            continue
+        analyze_to_cache(p, cache_dir, analysis_dir, force, b)
+        done.add(p)
+        n += 1
+        progress(n, total, p)
+    return n
