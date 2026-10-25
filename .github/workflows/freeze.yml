@@ -21,8 +21,8 @@ jobs:
       - name: v0.9.7 (veche)
         shell: bash
         env: { QT_QPA_PLATFORM: offscreen }
-        run: python .github/freeze/freeze.py ../old 3000 6 2>&1 | tail -15
+        run: python .github/freeze/freeze.py ../old 3000 6 2>&1 | tail -15 | sed "s/^/::warning::OLD /"
       - name: v0.9.8 (nouă)
         shell: bash
         env: { QT_QPA_PLATFORM: offscreen }
-        run: python .github/freeze/freeze.py . 3000 6 2>&1 | tail -15
+        run: python .github/freeze/freeze.py . 3000 6 2>&1 | tail -15 | sed "s/^/::warning::NEW /"
