@@ -54,6 +54,10 @@ def run(app, win, folder: str, out: str, limit_s: float = 240) -> int:
     try:
         win._go_name("explore")
         ex = win.explore
+        end = time.time() + 3                   # lăsăm reîncărcările de la pornire să se termine
+        while time.time() < end:
+            app.processEvents()
+            time.sleep(0.02)
         files = sorted(lib.find_audio_files([folder]))
         rows = [exm.Row(lib.track_from_file(p)) for p in files]
         for i in range(int(os.environ.get("MM_DIAG_PAD", "0"))):     # bibliotecă mare: rânduri în plus
@@ -80,6 +84,8 @@ def run(app, win, folder: str, out: str, limit_s: float = 240) -> int:
             app.processEvents()
             time.sleep(0.01)
         rep["seconds"] = round(time.perf_counter() - t0, 1)
+        rep["rows_replaced"] = ex.model.rows is not rows
+        rows = ex.model.rows
         rep["analyzed"] = sum(1 for r in rows if r.mix is not None)
         rep["errors"] = [r.mix.error for r in rows if r.mix is not None and r.mix.error][:5]
         rep["cached"] = sum(1 for p in files if mx.load_cached(p, exm.mix_dir()) is not None)

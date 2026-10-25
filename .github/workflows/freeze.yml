@@ -29,16 +29,27 @@ jobs:
           (cd ../old && pyinstaller --noconfirm --clean --distpath ../dist_old packaging/MusicManager.spec > /dev/null 2>&1)
           pyinstaller --noconfirm --clean --distpath ../dist_new packaging/MusicManager.spec > /dev/null 2>&1
           ls ../dist_old/MusicManager/MusicManager.exe ../dist_new/MusicManager/MusicManager.exe
-      - name: Rulează diagnosticul
+      - name: Diagnostic old
+        if: always()
         shell: pwsh
         env: { QT_QPA_PLATFORM: offscreen, MM_DIAG_PAD: "3000" }
         run: |
           $env:MM_DIAG_ANALYZE = "$env:RUNNER_TEMP\piese"
-          foreach ($v in @("old", "new")) {
-            Remove-Item -Recurse -Force "$env:APPDATA\MusicManager" -ErrorAction SilentlyContinue
-            Remove-Item -Recurse -Force "$env:LOCALAPPDATA\MusicManager" -ErrorAction SilentlyContinue
-            $env:MM_DIAG_OUT = "$env:RUNNER_TEMP\diag_$v.json"
-            $p = Start-Process "..\dist_$v\MusicManager\MusicManager.exe" -PassThru
-            if (-not $p.WaitForExit(330000)) { $p.Kill(); Write-Output "::warning::$v EXE NU S-A ÎNCHIS (blocat)" }
-            python .github/freeze/show.py "EXE-$v" $env:MM_DIAG_OUT
-          }
+          Remove-Item -Recurse -Force "$env:APPDATA\MusicManager" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:LOCALAPPDATA\MusicManager" -ErrorAction SilentlyContinue
+          $env:MM_DIAG_OUT = "$env:RUNNER_TEMP\diag_old.json"
+          $p = Start-Process "..\dist_old\MusicManager\MusicManager.exe" -PassThru
+          if (-not $p.WaitForExit(330000)) { $p.Kill(); Write-Output "::warning::old EXE BLOCAT, nu s-a inchis" }
+          python .github/freeze/show.py "EXE-old" $env:MM_DIAG_OUT
+      - name: Diagnostic new
+        if: always()
+        shell: pwsh
+        env: { QT_QPA_PLATFORM: offscreen, MM_DIAG_PAD: "3000" }
+        run: |
+          $env:MM_DIAG_ANALYZE = "$env:RUNNER_TEMP\piese"
+          Remove-Item -Recurse -Force "$env:APPDATA\MusicManager" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:LOCALAPPDATA\MusicManager" -ErrorAction SilentlyContinue
+          $env:MM_DIAG_OUT = "$env:RUNNER_TEMP\diag_new.json"
+          $p = Start-Process "..\dist_new\MusicManager\MusicManager.exe" -PassThru
+          if (-not $p.WaitForExit(330000)) { $p.Kill(); Write-Output "::warning::new EXE BLOCAT, nu s-a inchis" }
+          python .github/freeze/show.py "EXE-new" $env:MM_DIAG_OUT
