@@ -35,8 +35,8 @@ jobs:
         run: |
           $env:MM_DIAG_ANALYZE = "$env:RUNNER_TEMP\piese"
           foreach ($v in @("old", "new")) {
-            Remove-Item -Recurse -Force "$env:APPDATA\Music Manager" -ErrorAction SilentlyContinue
-            Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Music Manager" -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force "$env:APPDATA\MusicManager" -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force "$env:LOCALAPPDATA\MusicManager" -ErrorAction SilentlyContinue
             $env:MM_DIAG_OUT = "$env:RUNNER_TEMP\diag_$v.json"
             $p = Start-Process "..\dist_$v\MusicManager\MusicManager.exe" -PassThru
             if (-not $p.WaitForExit(330000)) { $p.Kill(); Write-Output "::warning::$v EXE NU S-A ÎNCHIS (blocat)" }
