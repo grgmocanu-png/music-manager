@@ -414,6 +414,9 @@ def analyze_to_cache(path: str, cache_dir: str, analysis_dir: str, force: bool =
     return path
 
 
+LAST_POOL_ERROR = ""
+
+
 def analyze_many(items, cache_dir: str, analysis_dir: str, force: bool = False,
                  progress=None, cancelled=None, workers: int | None = None) -> int:
     """Analizează mai multe piese în procese separate (1-2), cu fir de rezervă dacă procesele nu pornesc.
@@ -448,8 +451,9 @@ def analyze_many(items, cache_dir: str, analysis_dir: str, force: bool = False,
                         progress(n, total, p)
             finally:
                 ex.shutdown(wait=not cancelled(), cancel_futures=True)
-        except Exception:  # noqa: BLE001 — procesele n-au mers: continuăm în acest fir
-            pass
+        except Exception as e:  # noqa: BLE001 — procesele n-au mers: continuăm în acest fir
+            global LAST_POOL_ERROR
+            LAST_POOL_ERROR = f"{e.__class__.__name__}: {e}"
     for p, b in items:
         if cancelled():
             break

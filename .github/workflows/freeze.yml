@@ -4,26 +4,41 @@ on:
     branches: [ci-debug]
 jobs:
   measure:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest]
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip }
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
       - run: pip install -r requirements-dev.txt
-      - run: git worktree add ../old 460ca0ad9223d0855aed193de268dde2748ef889
-      - name: v0.9.7 (veche)
+      - name: Piese de test
+        run: python .github/freeze/gen.py "$env:RUNNER_TEMP\piese" 40
+      - name: Versiunea veche (0.9.7) + diagnostic
         shell: bash
-        env: { QT_QPA_PLATFORM: offscreen }
-        run: python .github/freeze/freeze.py ../old 3000 6 2>&1 | tail -15 | sed "s/^/::warning::OLD /"
-      - name: v0.9.8 (nouă)
-        if: always()
+        run: |
+          git worktree add ../old 460ca0a
+          cp music_manager/diag.py ../old/music_manager/
+          python - <<'PY'
+          p = "../old/music_manager/app.py"; s = open(p, encoding="utf-8").read()
+          s = s.replace('    if os.environ.get("MM_SMOKE_TEST"):', '    if os.environ.get("MM_DIAG_ANALYZE"):\n        from . import diag\n        return diag.run(app, win, os.environ["MM_DIAG_ANALYZE"], os.environ.get("MM_DIAG_OUT", "diag.json"))\n    if os.environ.get("MM_SMOKE_TEST"):')
+          open(p, "w", encoding="utf-8").write(s)
+          PY
+      - name: Build exe vechi și nou
         shell: bash
-        env: { QT_QPA_PLATFORM: offscreen }
-        run: python .github/freeze/freeze.py . 3000 6 2>&1 | tail -15 | sed "s/^/::warning::NEW /"
+        run: |
+          (cd ../old && pyinstaller --noconfirm --clean --distpath ../dist_old packaging/MusicManager.spec > /dev/null 2>&1)
+          pyinstaller --noconfirm --clean --distpath ../dist_new packaging/MusicManager.spec > /dev/null 2>&1
+          ls ../dist_old/MusicManager/MusicManager.exe ../dist_new/MusicManager/MusicManager.exe
+      - name: Rulează diagnosticul
+        shell: pwsh
+        env: { QT_QPA_PLATFORM: offscreen, MM_DIAG_PAD: "3000" }
+        run: |
+          $env:MM_DIAG_ANALYZE = "$env:RUNNER_TEMP\piese"
+          foreach ($v in @("old", "new")) {
+            Remove-Item -Recurse -Force "$env:APPDATA\Music Manager" -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Music Manager" -ErrorAction SilentlyContinue
+            $env:MM_DIAG_OUT = "$env:RUNNER_TEMP\diag_$v.json"
+            $p = Start-Process "..\dist_$v\MusicManager\MusicManager.exe" -PassThru
+            if (-not $p.WaitForExit(330000)) { $p.Kill(); Write-Output "::warning::$v EXE NU S-A ÎNCHIS (blocat)" }
+            python .github/freeze/show.py "EXE-$v" $env:MM_DIAG_OUT
+          }

@@ -47,6 +47,9 @@ def main() -> int:
     from .ui.main_window import MainWindow
     win = MainWindow()
     win.show()
+    if os.environ.get("MM_DIAG_ANALYZE"):
+        from . import diag
+        return diag.run(app, win, os.environ["MM_DIAG_ANALYZE"], os.environ.get("MM_DIAG_OUT", "diag.json"))
     if os.environ.get("MM_SMOKE_TEST"):
         # verificăm că bibliotecile încărcate „la nevoie” există și în aplicația împachetată
         import mutagen  # noqa: F401
