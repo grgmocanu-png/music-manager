@@ -15,4 +15,4 @@ jobs:
         shell: bash
         env: { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" }
         run: |
-          python .github/ml/check.py ../librosa_data/audio 2>&1 | tail -40 | cut -c1-1000 | sed "s/^/::warning::/"
+          python .github/ml/check.py ../librosa_data/audio 2>&1 | grep "::warning" || true

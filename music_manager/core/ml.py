@@ -1,6 +1,7 @@
 """Analize cu modele neuronale, descărcate la cerere din Setări (nu sunt în installer).
 
 - BPM și beatgrid: Beat This! (CPJKU, MIT), conversia ONNX tuneperfect/beat-this-onnx (logmel.onnx + beat_this.onnx).
+- Key: S-KEY (Deezer, MIT), conversia ONNX musetric/skey-onnx.
 - Genul / stilul din sunet: Discogs-EffNet (MTG, CC BY-NC-SA 4.0 — doar uz necomercial), 400 de stiluri Discogs.
 
 Rulează cu onnxruntime (inclus în aplicație). Fără modele descărcate, totul merge ca înainte.
@@ -15,12 +16,14 @@ import numpy as np
 
 MODELS = {
     "beats": {
-        "title": "BPM și beatgrid (Beat This!)",
+        "title": "BPM, beatgrid și Key (Beat This! + S-KEY)",
         "files": {
             "logmel.onnx": "https://huggingface.co/tuneperfect/beat-this-onnx/resolve/main/logmel.onnx",
             "beat_this.onnx": "https://huggingface.co/tuneperfect/beat-this-onnx/resolve/main/beat_this.onnx",
+            "skey.onnx": "https://huggingface.co/musetric/skey-onnx/resolve/main/skey.onnx",
+            "skey.json": "https://huggingface.co/musetric/skey-onnx/resolve/main/config.json",
         },
-        "license": "MIT (Beat This!, Institute of Computational Perception, JKU Linz)",
+        "license": "MIT (Beat This! — JKU Linz; S-KEY — Deezer)",
     },
     "genre": {
         "title": "Gen și stil din sunet (Discogs-EffNet)",
@@ -227,6 +230,31 @@ def grid(x: np.ndarray, folder: str = "", lo: float = 70, hi: float = 180) -> di
         in_bar = ((-j) % 4) + 1
     conf = float(np.mean(np.abs(resid) < 0.03))
     return {"bpm": round(bpm, 2), "first_ms": round(first * 1000.0, 1), "in_bar": in_bar, "confidence": conf}
+
+
+# --- Key (S-KEY) ---------------------------------------------------------------------------------------
+def key(x22: np.ndarray, folder: str = "", max_seconds: float = 240) -> tuple[str, float]:
+    """Tonalitatea (ex. „Am”, „F#”) și siguranța (diferența dintre primele două, 0..1). x: mono 22 050 Hz."""
+    folder = folder or models_dir()
+    with open(os.path.join(folder, "skey.json"), encoding="utf-8") as f:
+        cfg = json.load(f)
+    if len(x22) > max_seconds * BEAT_SR:                # partea din mijloc (memoria crește cu lungimea)
+        start = (len(x22) - int(max_seconds * BEAT_SR)) // 2
+        x22 = x22[start:start + int(max_seconds * BEAT_SR)]
+    peak = float(np.abs(x22).max()) or 1.0
+    s = _session(os.path.join(folder, "skey.onnx"))
+    probs = np.asarray(s.run(None, {s.get_inputs()[0].name: (x22 / peak).astype(np.float32)[None]})[0]).reshape(-1)
+    km = cfg.get("keyMap") or cfg.get("key_map") or cfg.get("labels")
+    if isinstance(km, dict):
+        km = [km[str(i)] if str(i) in km else km[i] for i in range(len(probs))]
+    order = np.argsort(probs)[::-1]
+    return _key_short(str(km[int(order[0])])), float(probs[order[0]] - probs[order[1]])
+
+
+def _key_short(label: str) -> str:
+    """„A Major” → „A”, „C minor” → „Cm”, „Bb minor” → „Bbm”."""
+    root, _sp, mode = label.strip().partition(" ")
+    return root + ("m" if mode.lower().startswith("min") else "")
 
 
 # --- gen / stil (Discogs-EffNet) ---------------------------------------------------------------------
