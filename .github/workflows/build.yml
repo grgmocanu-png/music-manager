@@ -94,6 +94,13 @@ jobs:
       - name: PyInstaller
         run: pyinstaller --noconfirm --clean packaging/MusicManager.spec
 
+      - name: Model mic pentru testul de fum
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/modele"
+          curl -sSfL -o "$RUNNER_TEMP/modele/skey.onnx" https://huggingface.co/musetric/skey-onnx/resolve/main/skey.onnx
+          curl -sSfL -o "$RUNNER_TEMP/modele/skey.json" https://huggingface.co/musetric/skey-onnx/resolve/main/config.json
+
       - name: Verifică executabilul
         shell: pwsh
         env:
@@ -101,6 +108,7 @@ jobs:
           MM_SMOKE_TEST: "1"
           MM_SMOKE_ONNX: "1"
         run: |
+          $env:MM_SMOKE_MODELS = "$env:RUNNER_TEMP\modele"
           $p = Start-Process dist\MusicManager\MusicManager.exe -PassThru
           if (-not $p.WaitForExit(60000)) { $p.Kill(); throw "aplicația nu s-a închis singură" }
           if ($p.ExitCode -ne 0) { throw "aplicația a ieșit cu codul $($p.ExitCode)" }

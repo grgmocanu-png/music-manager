@@ -63,6 +63,15 @@ def main() -> int:
             from .core import fingerprint
             if not fingerprint.fpcalc_path():
                 return 4
+            folder = os.environ.get("MM_SMOKE_MODELS", "")
+            if folder:                       # un model mic chiar rulează în aplicația împachetată
+                import numpy as np
+                from .core import ml
+                t = np.arange(22050 * 12) / 22050
+                k, _m = ml.key((0.3 * np.sin(2 * np.pi * 220 * t) + 0.2 * np.sin(2 * np.pi * 261.6 * t)
+                                + 0.2 * np.sin(2 * np.pi * 329.6 * t)).astype("float32"), folder)
+                if not k:
+                    return 5
         from PySide6.QtCore import QTimer
         QTimer.singleShot(1500, app.quit)
     return app.exec()
