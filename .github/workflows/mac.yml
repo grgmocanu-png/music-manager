@@ -48,6 +48,11 @@ jobs:
           chmod +x sockseek/sockseek
           ./sockseek/sockseek --help | head -3 || true
 
+      - name: fpcalc (Chromaprint)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python packaging/get_fpcalc.py
+
       - name: Iconiță (.icns)
         run: |
           mkdir -p icon.iconset
@@ -75,6 +80,7 @@ jobs:
         run: |
           "dist/Music Manager.app/Contents/MacOS/MusicManager"
           find "dist/Music Manager.app" -name sockseek -type f | grep -q sockseek
+          find "dist/Music Manager.app" -name fpcalc -type f | grep -q fpcalc
 
       - name: DMG
         run: |

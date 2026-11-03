@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import library as lib
-from .common import COLUMNS, AppState, Task, TrackTable, data_dir, history, undo_dir
+from .common import COLUMNS, AppState, Task, TrackTable, data_dir, history, settings, undo_dir
 from .library_tab import DuplicatesDialog, RenameDialog
 from .settings_tab import download_dir
 
@@ -103,7 +103,21 @@ class CleanupTab(QWidget):
             cl.addWidget(d)
             cl.addWidget(bar)
             cl.addWidget(done)
-            cl.addWidget(b, 0, Qt.AlignLeft)
+            if key == "dubluri":
+                brow = QHBoxLayout()
+                brow.addWidget(b)
+                self.dup_sound = QCheckBox("și după sunet")
+                self.dup_sound.setToolTip(
+                    "Compară și sunetul (Chromaprint): găsește aceeași înregistrare chiar dacă are alt nume, alte "
+                    "taguri, alt bitrate sau alt format.\nPrima dată durează (cam o jumătate de secundă pe piesă); "
+                    "amprentele se păstrează, apoi se calculează doar pentru piesele noi.")
+                self.dup_sound.setChecked(settings().value("dup/sound", False, type=bool))
+                self.dup_sound.toggled.connect(lambda on: settings().setValue("dup/sound", on))
+                brow.addWidget(self.dup_sound)
+                brow.addStretch()
+                cl.addLayout(brow)
+            else:
+                cl.addWidget(b, 0, Qt.AlignLeft)
             cards.addWidget(card, col // 3, col % 3)
             self.cards[key] = (n, bar, done)
         hint = QLabel("Dacă selectezi piese în tabel, acțiunile se aplică doar lor; altfel tuturor celor afișate. "
@@ -276,15 +290,67 @@ class CleanupTab(QWidget):
             return
         targets = self._targets()
         groups = lib.find_duplicates(targets)
+        if self.dup_sound.isChecked():
+            self._duplicates_by_sound(targets, groups)
+            return
+        self._show_duplicates(targets, [(g, None) for g in groups])
+
+    def _show_duplicates(self, targets, groups):
         if not groups:
             history().mark([t.path for t in targets], "dubluri")
             self.table.viewport().update()
             QMessageBox.information(self, "Dubluri", "Nu am găsit dubluri.")
             return
-        dlg = DuplicatesDialog(groups, self, targets)
+        dlg = DuplicatesDialog([g for g, _i in groups], self, targets, infos=[i for _g, i in groups])
         dlg.on_applied = self._after_change
         from .windows import tool_window
         tool_window(dlg, f"Dubluri — {len(groups)} grupuri")
+
+    def _duplicates_by_sound(self, targets, tag_groups):
+        """Amprentele se calculează în fundal (cu cache), apoi grupurile după taguri și după sunet se unesc."""
+        from ..core import fingerprint as fpr
+        from .jobs import Job
+        tools = os.path.join(data_dir(), "unelte")
+        cache = os.path.join(data_dir(), "amprente")
+        exe = fpr.fpcalc_path(tools)
+        paths = [t.path for t in targets if os.path.exists(t.path)]
+        durations = {t.path: t.duration for t in targets}
+
+        def work(progress, cancelled):
+            nonlocal exe
+            if not exe:
+                progress(0, 0, "Descarc fpcalc (o singură dată)…")
+                exe = fpr.download_fpcalc(tools)
+            fps, errors = fpr.compute_many(paths, exe, cache, progress, cancelled)
+            if cancelled():
+                return None
+            progress(len(paths), len(paths), "Compar amprentele…")
+            matches = fpr.sound_matches(fps, durations)
+            return fpr.merge_groups(tag_groups, targets, matches), errors
+
+        def done(res):
+            self.progress.hide()
+            if res is None:
+                return
+            groups, errors = res
+            if errors:
+                self.status.setText(f"{len(errors)} piese nu au putut fi ascultate (ex. "
+                                    f"{os.path.basename(next(iter(errors)))}: {next(iter(errors.values()))}).")
+            self._show_duplicates(targets, groups)
+
+        def failed(err):
+            self.progress.hide()
+            QMessageBox.warning(self, "Dubluri după sunet", f"Nu am putut compara sunetul: {err}\n\n"
+                                "Caut doar după taguri.")
+            self._show_duplicates(targets, [(g, None) for g in tag_groups])
+
+        job = Job(f"Dubluri după sunet ({len(paths)})", work, writes=False)
+        job.progress.connect(lambda d, t, x: (self.progress.show(), self.progress.setMaximum(max(t, 1)),
+                                              self.progress.setValue(d),
+                                              self.status.setText(f"Ascult piesele… {d}/{t}" if t else x)))
+        job.succeeded.connect(done)
+        job.failed.connect(failed)
+        job.start()
 
     def rename(self):
         tracks = self._targets()
