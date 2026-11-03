@@ -99,6 +99,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           MM_SMOKE_TEST: "1"
+          MM_SMOKE_ONNX: "1"
         run: |
           $p = Start-Process dist\MusicManager\MusicManager.exe -PassThru
           if (-not $p.WaitForExit(60000)) { $p.Kill(); throw "aplicația nu s-a închis singură" }

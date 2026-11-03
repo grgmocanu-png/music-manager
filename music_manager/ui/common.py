@@ -183,6 +183,28 @@ def analysis_dir() -> str:
     return os.path.join(data_dir(), "analiza")
 
 
+def _sound_genres_path() -> str:
+    return os.path.join(data_dir(), "gen_din_sunet.json")
+
+
+def load_sound_genres() -> dict:
+    """Genul / stilul propus din sunet (Bibliotecă → „Gen din sunet”), pe cale normalizată."""
+    import json
+    try:
+        with open(_sound_genres_path(), encoding="utf-8") as f:
+            return json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_sound_genres(data: dict) -> None:
+    from ..core.safeio import write_json
+    try:
+        write_json(_sound_genres_path(), data, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def mix_dir() -> str:
     return os.path.join(data_dir(), "mixabilitate")
 

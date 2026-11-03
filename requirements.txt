@@ -4,3 +4,5 @@ imageio-ffmpeg>=0.5
 certifi
 yt-dlp
 numpy
+onnxruntime>=1.17 ; sys_platform != "darwin" or platform_machine == "arm64"
+onnxruntime>=1.16,<1.20 ; sys_platform == "darwin" and platform_machine == "x86_64"

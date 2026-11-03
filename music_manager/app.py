@@ -58,6 +58,11 @@ def main() -> int:
         yt_dlp.YoutubeDL({"quiet": True})
         if not ffmpeg_path():
             return 3
+        if os.environ.get("MM_SMOKE_ONNX"):
+            import onnxruntime  # noqa: F401  (modelele din Setări → Analize avansate)
+            from .core import fingerprint
+            if not fingerprint.fpcalc_path():
+                return 4
         from PySide6.QtCore import QTimer
         QTimer.singleShot(1500, app.quit)
     return app.exec()

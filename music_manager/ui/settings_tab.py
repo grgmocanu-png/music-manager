@@ -260,7 +260,7 @@ class SettingsTab(QWidget):
         self.sections.setSpacing(2)
         for title, w in (("Foldere", page(self._library_box())),
                          ("Conturi și API", page(sp_box, td_box, sl_box, tags_box)),
-                         ("Programe DJ și analiză", page(self._dj_box())),
+                         ("Programe DJ și analiză", page(self._dj_box(), self._models_box())),
                          ("Genuri și BPM", page(self._genres_box())),
                          ("Aspect", page(self._aspect_box()))):
             from PySide6.QtCore import QSize
@@ -692,6 +692,77 @@ class SettingsTab(QWidget):
         self.fam_label.setText(", ".join(families()))
 
     # ---------- Programe DJ ----------
+    def _models_box(self):
+        """Descărcări opționale: modele neuronale pentru BPM / beatgrid / Key și pentru gen."""
+        from ..core import ml
+        box = QGroupBox("Analize avansate (descărcări opționale)")
+        lay = QVBoxLayout(box)
+        lay.addWidget(self._gray(
+            "Modele neuronale care rulează pe calculatorul tău. Nu sunt în installer; le descarci doar dacă le vrei. "
+            "Fără ele, analiza merge ca până acum."))
+        self.model_rows = {}
+        info = {
+            "beats": ("~85 MB", "Bibliotecă → analiza BPM / Key le folosește: BPM și Key mai precise (Beat This!, "
+                               "S-KEY). Pentru piesele analizate deja: click dreapta → „Analizează din nou”."),
+            "genre": ("~18 MB", "Bibliotecă → click dreapta → „Gen din sunet”: propune familia și stilul după cum sună "
+                                "piesa (400 de stiluri Discogs). Le accepți tu, ca la Taguri online."),
+        }
+        for name, meta in ml.MODELS.items():
+            size, what = info[name]
+            title = QLabel(f"<b>{meta['title']}</b> · {size}")
+            desc = self._gray(f"{what}<br>Licență: {meta['license']}.")
+            desc.setTextFormat(Qt.RichText)
+            state = QLabel()
+            b = QPushButton()
+            b.clicked.connect(lambda _=False, n=name: self._model_action(n))
+            row = QHBoxLayout()
+            row.addWidget(title, 1)
+            row.addWidget(state)
+            row.addWidget(b)
+            lay.addLayout(row)
+            lay.addWidget(desc)
+            self.model_rows[name] = (state, b)
+        self._models_refresh()
+        return box
+
+    def _models_refresh(self):
+        from ..core import ml
+        for name, (state, b) in self.model_rows.items():
+            if not ml.onnx_ok():
+                state.setText("<span style='color:#e0a458'>lipsește onnxruntime</span>")
+                b.setText("Descarcă")
+                b.setEnabled(False)
+            elif ml.installed(name):
+                state.setText("<span style='color:#27ae60'>✓ instalat</span>")
+                b.setText("Șterge")
+                b.setEnabled(True)
+            else:
+                state.setText("")
+                b.setText("Descarcă")
+                b.setEnabled(True)
+
+    def _model_action(self, name):
+        from ..core import ml
+        from .jobs import Job
+        state, b = self.model_rows[name]
+        if ml.installed(name):
+            if QMessageBox.question(self, "Analize avansate", "Șterg modelul de pe calculator? Îl poți descărca "
+                                    "din nou oricând.") == QMessageBox.Yes:
+                ml.remove(name)
+            self._models_refresh()
+            return
+        b.setEnabled(False)
+
+        def work(progress, cancelled):
+            ml.download(name, progress=lambda got, total, f: progress(got // 1024 ** 2, max(1, total // 1024 ** 2), f))
+            return True
+
+        job = Job(f"Descarc {ml.MODELS[name]['title']}", work, writes=False)
+        job.progress.connect(lambda d, t, f: state.setText(f"{d} / {t} MB"))
+        job.succeeded.connect(lambda _r: self._models_refresh())
+        job.failed.connect(lambda e: (self._models_refresh(), QMessageBox.warning(self, "Analize avansate", e)))
+        job.start()
+
     def _dj_box(self):
         from .library_view import documents_dirs, source_priority
         from ..core import djcollections as djc
