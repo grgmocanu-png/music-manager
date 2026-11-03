@@ -365,11 +365,14 @@ class NameCleanupDialog(QDialog):
 
 
 class DuplicatesDialog(QDialog):
-    def __init__(self, groups: list[list[lib.Track]], parent=None, targets: list[lib.Track] | None = None):
+    def __init__(self, groups: list[list[lib.Track]], parent=None, targets: list[lib.Track] | None = None,
+                 infos=None):
         super().__init__(parent)
         self.setWindowTitle("Dubluri")
-        self.resize(1100, 640)
+        self.resize(1180, 640)
         self.all_groups = groups
+        # pentru dublurile după sunet: motivul fiecărei piese și dacă grupul e „altă versiune?”
+        self.infos = {id(g): i for g, i in zip(groups, infos or []) if i is not None}
         self.targets = targets or [t for g in groups for t in g]
         self.moved = False
         info = QLabel("Piese care par la fel (același artist și titlu, durată apropiată). Alege ce păstrezi: "
@@ -397,8 +400,8 @@ class DuplicatesDialog(QDialog):
         self.tree = QTreeWidget()
         add_space_toggle(self.tree)
         add_reveal_menu(self.tree, lambda idx: getattr(self.tree.itemFromIndex(idx).data(0, Qt.UserRole), "path", ""))
-        self.tree.setHeaderLabels(["Piesă", "Calitate", "Durată", "Cale"])
-        for i, w in enumerate((340, 160, 60)):
+        self.tree.setHeaderLabels(["Piesă", "Calitate", "Durată", "Găsit după", "Cale"])
+        for i, w in enumerate((340, 160, 60, 130)):
             self.tree.setColumnWidth(i, w)
         self.summary = QLabel()
         self.tree.itemChanged.connect(lambda *_: self._update_summary())
@@ -432,17 +435,26 @@ class DuplicatesDialog(QDialog):
         self.tree.clear()
         for g in self._groups():
             first = g[0]
-            parent = QTreeWidgetItem([f"{first.artist or '?'} – {first.display_title}  ({len(g)})"])
+            info = self.infos.get(id(g))
+            head = f"{first.artist or '?'} – {first.display_title}  ({len(g)})"
+            if info is not None and info.version:
+                head += "   ⚠ aceeași piesă, altă versiune? (durate diferite — nu bifez nimic)"
+            parent = QTreeWidgetItem([head])
+            parent.setData(0, Qt.UserRole + 1, bool(info is not None and info.version))
             f = parent.font(0)
             f.setBold(True)
             parent.setFont(0, f)
+            if info is not None and info.version:
+                parent.setForeground(0, QBrush(QColor("#e0a458")))
             self.tree.addTopLevelItem(parent)
             for t in g:
-                it = QTreeWidgetItem([t.filename, t.quality_label, fmt_duration(t.duration), os.path.dirname(t.path)])
+                why = info.reason.get(t.path, "") if info is not None else "taguri"
+                it = QTreeWidgetItem([t.filename, t.quality_label, fmt_duration(t.duration), why,
+                                      os.path.dirname(t.path)])
                 it.setData(0, Qt.UserRole, t)
                 it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
                 it.setCheckState(0, Qt.Unchecked)
-                it.setToolTip(3, t.path)
+                it.setToolTip(4, t.path)
                 parent.addChild(it)
             parent.setExpanded(True)
         self.tree.blockSignals(False)
@@ -454,9 +466,12 @@ class DuplicatesDialog(QDialog):
         else:
             self.check_all_but_best()
 
-    def _children(self):
+    def _children(self, auto: bool = True):
+        """Grupurile cu piesele lor. auto=True sare peste grupurile „altă versiune?” (nu se bifează singure)."""
         for i in range(self.tree.topLevelItemCount()):
             p = self.tree.topLevelItem(i)
+            if auto and p.data(0, Qt.UserRole + 1):
+                continue
             yield p, [p.child(j) for j in range(p.childCount())]
 
     def check_format(self, fmt: str, save: bool = True):
@@ -498,14 +513,14 @@ class DuplicatesDialog(QDialog):
 
     def _set_all(self, on):
         self.tree.blockSignals(True)
-        for _p, kids in self._children():
+        for _p, kids in self._children(auto=on):
             for k in kids:
                 k.setCheckState(0, Qt.Checked if on else Qt.Unchecked)
         self.tree.blockSignals(False)
         self._update_summary()
 
     def _checked(self) -> list[str]:
-        return [k.data(0, Qt.UserRole).path for _p, kids in self._children() for k in kids
+        return [k.data(0, Qt.UserRole).path for _p, kids in self._children(auto=False) for k in kids
                 if k.checkState(0) == Qt.Checked]
 
     def _update_summary(self):
@@ -520,7 +535,13 @@ class DuplicatesDialog(QDialog):
         if not paths:
             QMessageBox.information(self, "Dubluri", "N-ai bifat nimic.")
             return
-        for _p, kids in self._children():
+        if any(p.data(0, Qt.UserRole + 1) and any(k.checkState(0) == Qt.Checked for k in kids)
+               for p, kids in self._children(auto=False)):
+            if QMessageBox.question(self, "Altă versiune?", "Ai bifat piese din grupuri marcate „aceeași piesă, "
+                                    "altă versiune?”: sună la fel la început, dar au durate diferite (ex. Radio "
+                                    "Edit și Extended Mix). Continui oricum?") != QMessageBox.Yes:
+                return
+        for _p, kids in self._children(auto=False):
             if all(k.checkState(0) == Qt.Checked for k in kids):
                 if QMessageBox.question(self, "Atenție", "Într-un grup ai bifat toate piesele, deci n-ar mai "
                                         "rămâne niciuna. Continui oricum?") != QMessageBox.Yes:

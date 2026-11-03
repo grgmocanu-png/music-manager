@@ -10,6 +10,11 @@ root = os.path.abspath(os.path.join(SPECPATH, ".."))
 datas = collect_data_files("imageio_ffmpeg") + collect_data_files("certifi")
 binaries = collect_dynamic_libs("imageio_ffmpeg")
 datas.append((os.path.join(root, "packaging", "icon.png"), "."))
+datas.append((os.path.join(root, "music_manager", "core", "cdj", "pioneer", "templates"),
+              os.path.join("music_manager", "core", "cdj", "pioneer", "templates")))
+fp = os.path.join(root, "fpcalc")
+if os.path.isdir(fp):
+    datas.append((fp, "fpcalc"))
 ss = os.path.join(root, "sockseek")
 if os.path.isdir(ss):
     datas.append((ss, "sockseek"))

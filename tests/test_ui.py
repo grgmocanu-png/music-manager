@@ -640,3 +640,51 @@ def test_v096_all_playlists(app, tmp_path, monkeypatch):
     from music_manager.ui import power
     power.keep_awake(True)
     power.keep_awake(False)
+
+
+def test_v100_sound_dupes_and_cdj_dialog(app, tmp_path, monkeypatch):
+    """1.0: dublurile după sunet (grupurile „altă versiune?” nu se bifează singure) și fereastra Stick CDJ."""
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+    from music_manager.core import fingerprint as fpr
+    from music_manager.ui.cleanup_dialogs import DuplicatesDialog
+    a = Track(path=str(tmp_path / "a.mp3"), artist="X", title="T", duration=210, bitrate=320)
+    b = Track(path=str(tmp_path / "b.mp3"), artist="X", title="T (Extended)", duration=420, bitrate=320)
+    c = Track(path=str(tmp_path / "c.mp3"), artist="Y", title="Z", duration=200, bitrate=320)
+    d = Track(path=str(tmp_path / "d.flac"), artist="Y2", title="Z2", duration=200, bitrate=900, lossless=True)
+    g1, g2 = [a, b], [c, d]
+    infos = [fpr.DupInfo({a.path: "sunet 95%", b.path: "sunet 95%"}, version=True),
+             fpr.DupInfo({c.path: "sunet 99%", d.path: "sunet 99%"}, version=False)]
+    dlg = DuplicatesDialog([g1, g2], None, [a, b, c, d], infos=infos)
+    dlg.check_all_but_best()
+    checked = set(dlg._checked())
+    assert a.path not in checked and b.path not in checked          # altă versiune: nimic bifat
+    assert d.path in checked                                         # dublura obișnuită se bifează
+    assert "altă versiune" in dlg.tree.topLevelItem(0).text(0)
+    assert dlg.tree.topLevelItem(1).child(0).text(3).startswith("sunet")
+    dlg.close()
+
+    # Stick CDJ: fără stick nu se poate scrie; cu un „stick” (folder) previzualizarea nu scrie nimic
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
+    from synth import make
+    from music_manager.core.cdj import drives as drv
+    from music_manager.ui import cdj_dialog
+    usb = tmp_path / "USB"
+    usb.mkdir()
+    monkeypatch.setattr(drv, "list_drives", lambda: [])
+    song = str(tmp_path / "Artist - Song.wav")
+    make(song, bpm=124, dur=20, brk=(8, 10))
+    from music_manager.core.libdb import LibItem
+    pls = cdj_dialog.stick_tracks(None, [("Set", [LibItem(Track(path=song, artist="Artist", title="Song",
+                                                                 duration=20), bpm=124.0, key="8A")])])
+    w = cdj_dialog.CdjStickDialog(pls)
+    assert not w.b_write.isEnabled()
+    monkeypatch.setattr(drv, "list_drives", lambda: [drv.Drive(str(usb), "DJ", "FAT32", 8 * 1024 ** 3,
+                                                                4 * 1024 ** 3)])
+    w.refresh()
+    assert w.b_write.isEnabled() and w.preview()
+    assert len(w.plan.copy) == 1 and not os.listdir(usb)
+    assert "1</b> de copiat" in w.summary.text()
+    w.close()

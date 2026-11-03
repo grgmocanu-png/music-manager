@@ -108,10 +108,15 @@ class ExportTab(QWidget):
         self.b_again = QPushButton("↻ Sincronizează din nou ultimul export")
         self.b_again.setToolTip("Aceleași playlisturi, în același loc: copiază doar ce e nou sau schimbat")
         self.b_again.clicked.connect(self.export_again)
+        b_cdj = QPushButton("Stick CDJ…")
+        b_cdj.setToolTip("Playlisturile bifate scrise direct pe stick în formatul citit de CDJ-uri (ca un export "
+                         "Rekordbox, fără Rekordbox): BPM, Key, beatgrid, waveform, coperți. Cu previzualizare.")
+        b_cdj.clicked.connect(self.cdj_stick)
         brow = QHBoxLayout()
         brow.addWidget(b_go)
         brow.addWidget(self.b_again)
         brow.addStretch()
+        brow.addWidget(b_cdj)
         self.last = QLabel()
         self.last.setObjectName("muted")
         self.last.setWordWrap(True)
@@ -342,6 +347,16 @@ class ExportTab(QWidget):
         job.succeeded.connect(finished)
         job.start()
         self.task = job
+
+    def cdj_stick(self):
+        keys = self._checked_keys()
+        if not keys:
+            QMessageBox.information(self, "Stick CDJ", "Bifează în stânga playlisturile pe care le pui pe stick.")
+            return
+        from .cdj_dialog import CdjStickDialog, stick_tracks
+        dlg = CdjStickDialog(stick_tracks(self.library, self._playlists(keys)), self)
+        from .windows import tool_window
+        tool_window(dlg, "Stick CDJ")
 
     def _write_playlists(self, dest, pls, copies: bool) -> list[str]:
         out_dir = os.path.join(dest, PL_DIR)

@@ -36,6 +36,9 @@ class DJInfo:
     artist: str = ""
     title: str = ""
     duration: float = 0.0
+    grid_ms: float = -1.0    # beatgrid-ul: unde e marcajul (ms de la începutul piesei); -1 = necunoscut
+    grid_bpm: float = 0.0    # BPM-ul gridului (poate fi mai precis decât cel afișat)
+    grid_beat: int = 1       # a câta bătaie din măsură e marcajul (1..4)
 
 
 @dataclass
@@ -160,6 +163,11 @@ def parse_traktor(path: str) -> Collection:
         tempo = e.find("TEMPO")
         if tempo is not None:
             info.bpm = round(_f(tempo.get("BPM")), 2)
+            info.grid_bpm = _f(tempo.get("BPM"))
+        for cue in e.findall("CUE_V2"):              # TYPE 4 = marcajul de grid (AutoGrid), START în ms
+            if cue.get("TYPE") == "4":
+                info.grid_ms = _f(cue.get("START"))
+                break
         mk = e.find("MUSICAL_KEY")
         if mk is not None and str(mk.get("VALUE", "")).isdigit() and int(mk.get("VALUE")) < 24:
             info.key = TRAKTOR_KEYS[int(mk.get("VALUE"))]
@@ -222,6 +230,14 @@ def parse_rekordbox_xml(path: str) -> Collection:
                       genre=t.get("Genre", "") or "", comment=t.get("Comments", "") or "",
                       artist=t.get("Artist", "") or "", title=t.get("Name", "") or "",
                       duration=_f(t.get("TotalTime")))
+        tempos = t.findall("TEMPO")                 # Inizio = secunda primei bătăi, Battito = bătaia din măsură
+        if tempos:
+            info.grid_ms = _f(tempos[0].get("Inizio")) * 1000.0
+            info.grid_bpm = _f(tempos[0].get("Bpm"))
+            try:
+                info.grid_beat = int(tempos[0].get("Battito", "1") or 1)
+            except ValueError:
+                info.grid_beat = 1
         np_ = norm_path(p)
         col.tracks[np_] = info
         if t.get("TrackID"):
