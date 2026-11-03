@@ -688,3 +688,13 @@ def test_v100_sound_dupes_and_cdj_dialog(app, tmp_path, monkeypatch):
     assert len(w.plan.copy) == 1 and not os.listdir(usb)
     assert "1</b> de copiat" in w.summary.text()
     w.close()
+
+
+def test_v110_models_box(app, monkeypatch):
+    """1.1: Setări → Analize avansate (modele descărcate la cerere)."""
+    from music_manager.ui.settings_tab import SettingsTab
+    st = SettingsTab()
+    assert set(st.model_rows) == {"beats", "genre"}
+    state, b = st.model_rows["beats"]
+    assert b.text() in ("Descarcă", "Șterge")
+    st.close()

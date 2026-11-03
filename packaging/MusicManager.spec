@@ -9,6 +9,11 @@ root = os.path.abspath(os.path.join(SPECPATH, ".."))
 
 datas = collect_data_files("imageio_ffmpeg") + collect_data_files("certifi")
 binaries = collect_dynamic_libs("imageio_ffmpeg")
+try:                                   # modelele neuronale (Setări → Analize avansate)
+    binaries += collect_dynamic_libs("onnxruntime")
+    onnx_hidden = ["onnxruntime"] + collect_submodules("onnxruntime.capi")
+except Exception:
+    onnx_hidden = []
 datas.append((os.path.join(root, "packaging", "icon.png"), "."))
 datas.append((os.path.join(root, "music_manager", "core", "cdj", "pioneer", "templates"),
               os.path.join("music_manager", "core", "cdj", "pioneer", "templates")))
@@ -24,7 +29,7 @@ a = Analysis(
     pathex=[root],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["mutagen", "imageio_ffmpeg", "certifi"] + collect_submodules("yt_dlp.extractor.youtube"),
+    hiddenimports=["mutagen", "imageio_ffmpeg", "certifi"] + onnx_hidden + collect_submodules("yt_dlp.extractor.youtube"),
     excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
               "PySide6.Qt3DCore", "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtCharts",
               "PySide6.QtDataVisualization", "PySide6.QtPdf"],

@@ -1038,9 +1038,11 @@ class LibraryView(QWidget):
     def _annotate(self, items):
         """Familia de gen și playlisturile în care apare fiecare piesă."""
         from .dialogs import genre_mapper, load_tag_results
+        from .common import load_sound_genres
         mapper = genre_mapper()
         ranges = bpm_ranges()
         sugg = load_tag_results()          # ce au găsit Taguri online (propuneri, nu se scriu singure)
+        sound = load_sound_genres()        # ce a „auzit” modelul de gen (tot propuneri)
         member: dict[str, list[str]] = {}
         for p in self.db.playlists:
             if p.kind == "manual":
@@ -1065,9 +1067,13 @@ class LibraryView(QWidget):
             it.family = manual or fam
             it.family_src = "manual" if manual else ("gen" if fam else "")
             s = sugg.get(djc.norm_path(it.path))
+            snd = sound.get(djc.norm_path(it.path))
             if s and s.get("genre") and s["genre"] != it.family:
                 it.suggest = s["genre"]
                 it.suggest_genre = ", ".join((s.get("styles") or [])[:1])
+            elif snd and snd.get("family") and snd["family"] != it.family:
+                it.suggest = snd["family"]                          # din sunet (Setări → Analize avansate)
+                it.suggest_genre = f"{snd.get('style', '')} (din sunet)".strip()
             else:
                 it.suggest, it.suggest_genre = "", ""
             it.bpm_suggest = ldb.bpm_suggestion(it.bpm, it.family, ranges) if it.bpm_src != "Manual" else 0.0
@@ -1800,6 +1806,7 @@ class LibraryView(QWidget):
             r.addAction("★" * n if n else "fără", lambda n=n: self.set_rating(sel, n))
         m.addAction("Taguri online (gen, an, label, copertă)…", lambda: self.tag_finder(sel))
         m.addAction("Analizează (BPM, tonalitate, waveform)", lambda: self.analyze(sel))
+        m.addAction("Gen din sunet (propunere)", lambda: self.genre_from_sound(sel))
         m.addAction("Scrie BPM-ul și tonalitatea în fișiere", lambda: self.write_bpm_key(sel))
         m.addSeparator()
         exp = m.addMenu("Exportă selecția")
@@ -2186,6 +2193,64 @@ class LibraryView(QWidget):
         if jobs and QMessageBox.question(self, "BPM / tonalitate", f"Scriu BPM-ul și tonalitatea în {len(jobs)} "
                                          "fișiere? (Traktor și Rekordbox le pot citi la reimport.)") == QMessageBox.Yes:
             write_tags_in_background(self, jobs, self.reload)
+
+    def genre_from_sound(self, items):
+        """Propune familia și stilul după cum sună piesa (modelul Discogs-EffNet, descărcat din Setări)."""
+        from ..core import ml
+        if not ml.installed("genre"):
+            QMessageBox.information(self, "Gen din sunet", "Descarcă întâi modelul: Setări → Programe DJ și analiză → "
+                                    "Analize avansate → „Gen și stil din sunet”.")
+            return
+        items = [i for i in items if not (i.missing or i.offline)]
+        if not items:
+            return
+        from .common import load_sound_genres, save_sound_genres
+        from .dialogs import genre_mapper
+        from .jobs import Job
+        mapper = genre_mapper()
+        paths = [i.path for i in items]
+
+        def work(progress, cancelled):
+            res = {}
+            for n, p in enumerate(paths):
+                if cancelled():
+                    break
+                try:
+                    x16 = an.decode(p, sr=ml.GENRE_SR, timeout=180)
+                    top = ml.genres(x16, top=5)
+                except Exception as e:  # noqa: BLE001
+                    res[p] = {"error": str(e)}
+                    progress(n + 1, len(paths), os.path.basename(p))
+                    continue
+                fam = ""
+                for g, st, _p in top:                    # primul stil care are o familie la tine
+                    fam = mapper.family_of(st) or mapper.family_of(g)
+                    if fam:
+                        break
+                g, st, pr = top[0]
+                res[p] = {"family": fam or g, "style": st, "genre": g, "p": round(pr, 3),
+                          "top": [[a, b, round(c, 3)] for a, b, c in top]}
+                progress(n + 1, len(paths), os.path.basename(p))
+            return res
+
+        def done(res):
+            store = load_sound_genres()
+            for p, r in res.items():
+                if "error" not in r:
+                    store[djc.norm_path(p)] = r
+            save_sound_genres(store)
+            self._annotate(items)
+            for it in items:
+                self.table.model_.refresh_row(it.path)
+            ok = sum(1 for r in res.values() if "error" not in r)
+            self.status.setText(f"Gen din sunet: {ok} piese ascultate. Propunerile apar la Familie (✓ … din sunet); "
+                                "click dreapta → „✓ Acceptă sugestia (Family)” ca să le păstrezi.")
+
+        job = Job(f"Gen din sunet ({len(paths)})", work, writes=False)
+        job.progress.connect(lambda d, t, x: self.status.setText(f"Ascult piesele… {d}/{t}: {x}"))
+        job.succeeded.connect(done)
+        job.failed.connect(lambda e: QMessageBox.warning(self, "Gen din sunet", e))
+        job.start()
 
     def tag_finder(self, items):
         tracks = [it.track for it in items if not it.missing]

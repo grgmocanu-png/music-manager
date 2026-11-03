@@ -428,6 +428,31 @@ def analyze_samples(x: np.ndarray, bpm_range: tuple[float, float] = (85, 175)) -
     return a
 
 
+def refine_with_models(path: str, a: Analysis, bpm_range=(85, 175), ffmpeg: str | None = None) -> bool:
+    """Dacă ai descărcat modelele (Setări → Analize avansate): BPM din Beat This! (când e sigur) și Key din S-KEY.
+    Orice problemă → rămâne analiza obișnuită."""
+    try:
+        from . import ml
+        if not ml.installed("beats"):
+            return False
+        x22 = decode(path, ffmpeg, sr=ml.BEAT_SR, timeout=180)
+        g = ml.grid(x22)
+        if g and g["confidence"] >= 0.5:
+            bpm = g["bpm"]
+            lo, hi = bpm_range
+            while bpm < lo:
+                bpm *= 2
+            while bpm > hi:
+                bpm /= 2
+            a.bpm, a.bpm_confidence = round(bpm, 2), float(g["confidence"])
+        k, margin = ml.key(x22)
+        if k:
+            a.key, a.key_confidence = k, float(min(1.0, margin * 10))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def analyze(path: str, cache_dir: str | None = None, ffmpeg: str | None = None,
             bpm_range: tuple[float, float] = (85, 175), force: bool = False) -> Analysis:
     """force=True: analizează din nou chiar dacă există deja (sau a eșuat înainte)."""
@@ -439,6 +464,7 @@ def analyze(path: str, cache_dir: str | None = None, ffmpeg: str | None = None,
     try:
         x = decode(path, ffmpeg)
         a = analyze_samples(x, bpm_range)
+        refine_with_models(path, a, bpm_range, ffmpeg)
     except Exception as e:
         from datetime import datetime
         a.error = str(e) or e.__class__.__name__
